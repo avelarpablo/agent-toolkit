@@ -1,0 +1,4 @@
+{
+  "entrypoint": "ralph-core",
+  "description": "AFK agent runner — implements GitHub issues autonomously via Claude + Codex"
+}

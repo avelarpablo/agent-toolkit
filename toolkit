@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TOOLKIT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILLS_SRC="$TOOLKIT_DIR/skills"
+RUNNERS_SRC="$TOOLKIT_DIR/runners"
+META_DIR="$TOOLKIT_DIR/.toolkit"
+DISABLED_FILE="$META_DIR/disabled.json"
+
+SKILLS_TARGET="$HOME/.agents/skills"
+ZSHRC="$HOME/.zshrc"
+
+SENTINEL_BEGIN="# >>> agent-toolkit runners >>>"
+SENTINEL_END="# <<< agent-toolkit runners <<<"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+ensure_meta_dir() {
+  [[ -d "$META_DIR" ]] || mkdir -p "$META_DIR"
+  if [[ ! -f "$DISABLED_FILE" ]]; then
+    printf '{\n  "skills": [],\n  "runners": []\n}\n' > "$DISABLED_FILE"
+  fi
+}
+
+is_disabled() {
+  local type="$1" name="$2"
+  [[ ! -f "$DISABLED_FILE" ]] && return 1
+  python3 -c "
+import json, sys
+d = json.load(open('$DISABLED_FILE'))
+sys.exit(0 if '$name' in d.get('$type', []) else 1)
+"
+}
+
+set_disabled() {
+  local type="$1" name="$2" action="$3"
+  ensure_meta_dir
+  python3 -c "
+import json
+path = '$DISABLED_FILE'
+d = json.load(open(path))
+lst = d.setdefault('$type', [])
+if '$action' == 'add' and '$name' not in lst:
+    lst.append('$name')
+    lst.sort()
+elif '$action' == 'remove' and '$name' in lst:
+    lst.remove('$name')
+d['$type'] = lst
+json.dump(d, open(path, 'w'), indent=2)
+print()
+"
+}
+
+owns_symlink() {
+  local link="$1"
+  [[ -L "$link" ]] || return 1
+  local target
+  target="$(readlink "$link")"
+  [[ "$target" == "$TOOLKIT_DIR/skills/"* ]]
+}
+
+available_skills() {
+  for d in "$SKILLS_SRC"/*/; do
+    [[ -f "$d/SKILL.md" ]] && basename "$d"
+  done
+}
+
+available_runners() {
+  for d in "$RUNNERS_SRC"/*/; do
+    [[ -f "$d/runner.json" ]] && basename "$d"
+  done
+}
+
+runner_entrypoint() {
+  local name="$1"
+  python3 -c "
+import json
+r = json.load(open('$RUNNERS_SRC/$name/runner.json'))
+print(r['entrypoint'])
+"
+}
+
+runner_description() {
+  local name="$1"
+  python3 -c "
+import json
+r = json.load(open('$RUNNERS_SRC/$name/runner.json'))
+print(r.get('description', ''))
+"
+}
+
+# ---------------------------------------------------------------------------
+# Sync: skills
+# ---------------------------------------------------------------------------
+
+sync_skills() {
+  local dry_run="${1:-false}"
+  local force="${2:-false}"
+  local created=0 removed=0 skipped=0 kept=0
+
+  if [[ ! -d "$SKILLS_TARGET" ]]; then
+    if [[ "$dry_run" == "true" ]]; then
+      echo "  would create $SKILLS_TARGET"
+    else
+      mkdir -p "$SKILLS_TARGET"
+    fi
+  fi
+
+  # Add symlinks for enabled skills
+  for skill in $(available_skills); do
+    local link="$SKILLS_TARGET/$skill"
+    local target="$SKILLS_SRC/$skill"
+
+    if is_disabled skills "$skill"; then
+      # If disabled but our symlink exists, remove it
+      if owns_symlink "$link"; then
+        if [[ "$dry_run" == "true" ]]; then
+          echo "  would remove $skill (disabled)"
+        else
+          rm "$link"
+          echo "  removed $skill (disabled)"
+        fi
+        ((removed++))
+      fi
+      continue
+    fi
+
+    if [[ -L "$link" ]]; then
+      local current_target
+      current_target="$(readlink "$link")"
+      if [[ "$current_target" == "$target" ]]; then
+        ((kept++))
+        continue
+      fi
+      if [[ "$current_target" == "$TOOLKIT_DIR/skills/"* ]]; then
+        # Our symlink but pointing to wrong place — update
+        if [[ "$dry_run" == "true" ]]; then
+          echo "  would update $skill"
+        else
+          rm "$link"
+          ln -s "$target" "$link"
+          echo "  updated $skill"
+        fi
+        ((created++))
+        continue
+      fi
+      if [[ "$force" == "true" ]]; then
+        if [[ "$dry_run" == "true" ]]; then
+          echo "  would replace $skill (was → $current_target)"
+        else
+          rm "$link"
+          ln -s "$target" "$link"
+          echo "  replaced $skill (was → $current_target)"
+        fi
+        ((created++))
+        continue
+      fi
+      echo "  WARN: $skill exists as symlink to $current_target — skipping (use --force to replace)"
+      ((skipped++))
+      continue
+    fi
+
+    if [[ -e "$link" ]]; then
+      echo "  WARN: $skill exists as a real directory — skipping"
+      ((skipped++))
+      continue
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+      echo "  would create $skill → $target"
+    else
+      ln -s "$target" "$link"
+      echo "  created $skill"
+    fi
+    ((created++))
+  done
+
+  # Remove orphaned symlinks (ours that no longer exist in skills/)
+  for link in "$SKILLS_TARGET"/*/; do
+    [[ -e "$link" ]] || continue
+    local name
+    name="$(basename "$link")"
+    [[ "$name" == .* ]] && continue
+    if owns_symlink "${link%/}" && [[ ! -d "$SKILLS_SRC/$name" ]]; then
+      if [[ "$dry_run" == "true" ]]; then
+        echo "  would remove $name (orphaned — no longer in skills/)"
+      else
+        rm "${link%/}"
+        echo "  removed $name (orphaned — no longer in skills/)"
+      fi
+      ((removed++))
+    fi
+  done
+
+  echo "  skills: $created changed, $kept unchanged, $removed removed, $skipped skipped"
+}
+
+# ---------------------------------------------------------------------------
+# Sync: runners (managed block in .zshrc)
+# ---------------------------------------------------------------------------
+
+build_alias_block() {
+  echo "$SENTINEL_BEGIN"
+  for runner in $(available_runners); do
+    is_disabled runners "$runner" && continue
+    local entrypoint
+    entrypoint="$(runner_entrypoint "$runner")"
+    echo "alias $runner=\"$RUNNERS_SRC/$runner/$entrypoint\""
+  done
+  echo "$SENTINEL_END"
+}
+
+sync_runners() {
+  local dry_run="${1:-false}"
+
+  local new_block
+  new_block="$(build_alias_block)"
+
+  if [[ ! -f "$ZSHRC" ]]; then
+    echo "  WARN: $ZSHRC not found — skipping runner aliases"
+    return
+  fi
+
+  # Check for conflicting aliases outside the managed block
+  for runner in $(available_runners); do
+    is_disabled runners "$runner" && continue
+    local pattern="alias ${runner}="
+    local conflicts
+    conflicts="$(sed "/$SENTINEL_BEGIN/,/$SENTINEL_END/d" "$ZSHRC" | grep -n "$pattern" || true)"
+    if [[ -n "$conflicts" ]]; then
+      echo "  WARN: found existing alias '$runner' outside managed block:"
+      echo "        $conflicts"
+      echo "        remove it manually to avoid conflicts"
+    fi
+  done
+
+  if grep -qF "$SENTINEL_BEGIN" "$ZSHRC"; then
+    # Extract current block
+    local current_block
+    current_block="$(sed -n "/$SENTINEL_BEGIN/,/$SENTINEL_END/p" "$ZSHRC")"
+    if [[ "$current_block" == "$new_block" ]]; then
+      echo "  runners: no changes"
+      return
+    fi
+    if [[ "$dry_run" == "true" ]]; then
+      echo "  would update managed block in $ZSHRC:"
+      echo "$new_block" | sed 's/^/    /'
+    else
+      # Replace the block in-place
+      local tmp
+      tmp="$(mktemp)"
+      awk -v begin="$SENTINEL_BEGIN" -v end="$SENTINEL_END" -v new="$new_block" '
+        $0 == begin { print new; skip=1; next }
+        $0 == end { skip=0; next }
+        !skip { print }
+      ' "$ZSHRC" > "$tmp"
+      mv "$tmp" "$ZSHRC"
+      echo "  runners: updated managed block in $ZSHRC"
+    fi
+  else
+    if [[ "$dry_run" == "true" ]]; then
+      echo "  would append managed block to $ZSHRC:"
+      echo "$new_block" | sed 's/^/    /'
+    else
+      printf '\n%s\n' "$new_block" >> "$ZSHRC"
+      echo "  runners: appended managed block to $ZSHRC"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_sync() {
+  local dry_run="false"
+  local force="false"
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) dry_run="true" ;;
+      --force)   force="true" ;;
+    esac
+  done
+
+  ensure_meta_dir
+
+  if [[ "$dry_run" == "true" ]]; then
+    echo "Dry run — no changes will be made"
+    echo ""
+  fi
+
+  echo "Skills ($SKILLS_TARGET):"
+  sync_skills "$dry_run" "$force"
+  echo ""
+  echo "Runners ($ZSHRC):"
+  sync_runners "$dry_run"
+}
+
+cmd_disable() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { echo "Usage: toolkit disable <skill-or-runner>"; exit 1; }
+
+  ensure_meta_dir
+
+  if [[ -d "$SKILLS_SRC/$name" ]]; then
+    set_disabled skills "$name" add
+    echo "Disabled skill: $name"
+    echo "Run './toolkit sync' to apply"
+  elif [[ -d "$RUNNERS_SRC/$name" ]]; then
+    set_disabled runners "$name" add
+    echo "Disabled runner: $name"
+    echo "Run './toolkit sync' to apply"
+  else
+    echo "Unknown skill or runner: $name"
+    exit 1
+  fi
+}
+
+cmd_enable() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { echo "Usage: toolkit enable <skill-or-runner>"; exit 1; }
+
+  ensure_meta_dir
+
+  if [[ -d "$SKILLS_SRC/$name" ]]; then
+    set_disabled skills "$name" remove
+    echo "Enabled skill: $name"
+    echo "Run './toolkit sync' to apply"
+  elif [[ -d "$RUNNERS_SRC/$name" ]]; then
+    set_disabled runners "$name" remove
+    echo "Enabled runner: $name"
+    echo "Run './toolkit sync' to apply"
+  else
+    echo "Unknown skill or runner: $name"
+    exit 1
+  fi
+}
+
+cmd_status() {
+  echo "Agent Toolkit Status"
+  echo "===================="
+  echo ""
+  echo "Source: $TOOLKIT_DIR"
+  echo "Target: $SKILLS_TARGET"
+  echo ""
+
+  echo "Skills:"
+  for skill in $(available_skills); do
+    local link="$SKILLS_TARGET/$skill"
+    local state=""
+
+    if is_disabled skills "$skill"; then
+      state="disabled"
+    elif owns_symlink "$link" 2>/dev/null; then
+      state="installed"
+    elif [[ -L "$link" ]]; then
+      state="conflict (→ $(readlink "$link"))"
+    elif [[ -e "$link" ]]; then
+      state="conflict (real directory)"
+    else
+      state="not installed"
+    fi
+
+    printf "  %-35s %s\n" "$skill" "$state"
+  done
+
+  # Check for orphaned symlinks (ours but no longer in skills/)
+  for link in "$SKILLS_TARGET"/*/; do
+    [[ -e "$link" ]] || continue
+    local name
+    name="$(basename "$link")"
+    [[ "$name" == .* ]] && continue
+    if owns_symlink "${link%/}" && [[ ! -d "$SKILLS_SRC/$name" ]]; then
+      printf "  %-35s %s\n" "$name" "orphaned (no longer in skills/)"
+    fi
+  done
+
+  echo ""
+  echo "Runners:"
+  for runner in $(available_runners); do
+    local desc
+    desc="$(runner_description "$runner")"
+    local state=""
+
+    if is_disabled runners "$runner"; then
+      state="disabled"
+    elif grep -qF "$SENTINEL_BEGIN" "$ZSHRC" 2>/dev/null && \
+         sed -n "/$SENTINEL_BEGIN/,/$SENTINEL_END/p" "$ZSHRC" | grep -q "alias ${runner}="; then
+      state="installed"
+    else
+      state="not installed"
+    fi
+
+    printf "  %-20s %-10s %s\n" "$runner" "$state" "$desc"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+case "${1:-status}" in
+  sync)    shift; cmd_sync "$@" ;;
+  disable) cmd_disable "${2:-}" ;;
+  enable)  cmd_enable "${2:-}" ;;
+  status)  cmd_status ;;
+  *)
+    echo "Usage: toolkit <command>"
+    echo ""
+    echo "Commands:"
+    echo "  sync [--dry-run] [--force]  Create/update skill symlinks and runner aliases"
+    echo "  disable <name>              Disable a skill or runner"
+    echo "  enable <name>               Re-enable a skill or runner"
+    echo "  status                      Show current state (default)"
+    ;;
+esac

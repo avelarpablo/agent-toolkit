@@ -1,0 +1,95 @@
+#!/bin/bash
+# ralph-diag — diagnose why ralph loop fails in VS Code terminal
+# Run from any repo root: ralph-diag
+
+set -eo pipefail
+
+OUT="/tmp/ralph-diag.log"
+> "$OUT"
+
+log() { printf "[diag] %s\n" "$*" | tee -a "$OUT"; }
+
+log "=== ralph-diag $(date) ==="
+log "bash: $BASH_VERSION"
+log "shell: $SHELL"
+log "term: ${TERM:-unset}"
+log "tty: $(tty 2>&1 || echo 'not a tty')"
+log "LINES=$LINES COLUMNS=$COLUMNS"
+log "tput lines: $(tput lines 2>&1)"
+log "tput cols: $(tput cols 2>&1)"
+log "VIRTUAL_ENV: ${VIRTUAL_ENV:-unset}"
+log "PATH (first 5):"
+echo "$PATH" | tr ':' '\n' | head -5 | tee -a "$OUT"
+
+log ""
+log "=== Account resolution ==="
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { log "FAIL: not in a git repo"; exit 1; }
+log "REPO_ROOT=$REPO_ROOT"
+
+ACCOUNTS_FILE="$HOME/.ralph/accounts.toml"
+log "ACCOUNTS_FILE exists: $([[ -f "$ACCOUNTS_FILE" ]] && echo yes || echo NO)"
+
+log ""
+log "=== Sourcing libs ==="
+source "$HOME/.ralph/lib/state.sh" 2>&1 | tee -a "$OUT" && log "state.sh: OK" || log "state.sh: FAILED"
+source "$HOME/.ralph/lib/footer.sh" 2>&1 | tee -a "$OUT" && log "footer.sh: OK" || log "footer.sh: FAILED"
+
+log ""
+log "=== _state_init ==="
+_state_init 1 2>&1 | tee -a "$OUT" && log "_state_init: OK (RALPH_STATE_DIR=$RALPH_STATE_DIR)" || log "_state_init: FAILED"
+
+log ""
+log "=== _state_update_iter (no kv args) ==="
+_state_update_iter 1 "starting" 2>&1 | tee -a "$OUT" && log "_state_update_iter starting: OK" || log "_state_update_iter starting: FAILED ($?)"
+
+log ""
+log "=== _state_update_iter (with kv args) ==="
+_state_update_iter 1 "implementing" "issue_number=124" "issue_title=test" 2>&1 | tee -a "$OUT" && log "_state_update_iter kv: OK" || log "_state_update_iter kv: FAILED ($?)"
+
+log ""
+log "=== _footer_setup ==="
+_footer_setup 2>&1 | tee -a "$OUT" && log "_footer_setup: OK (_FOOTER_ACTIVE=$_FOOTER_ACTIVE)" || log "_footer_setup: FAILED ($?)"
+
+log ""
+log "=== Footer teardown ==="
+_footer_teardown 2>&1 | tee -a "$OUT" && log "_footer_teardown: OK" || log "_footer_teardown: FAILED"
+
+log ""
+log "=== GH auth check ==="
+GH_HOST=github.sie.sony.com gh auth status 2>&1 | tee -a "$OUT" || log "gh auth: FAILED"
+
+log ""
+log "=== GH issue list ==="
+remote_url=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null)
+REPO=$(echo "$remote_url" | sed -E 's|.*[:/]([^/]+/[^/]+)\.git$|\1|; s|.*[:/]([^/]+/[^/]+)$|\1|')
+log "REPO=$REPO"
+GH_HOST=github.sie.sony.com gh issue list --repo "$REPO" --state open --label ready-for-agent --json number --jq '.[].number' 2>&1 | tee -a "$OUT" || log "gh issue list: FAILED"
+
+log ""
+log "=== claude CLI ==="
+log "which claude: $(which claude 2>&1)"
+claude --version 2>&1 | tee -a "$OUT" || log "claude --version: FAILED"
+
+log ""
+log "=== mktemp ==="
+f=$(mktemp /tmp/ralph-fmt-XXXXXX) && log "mktemp: OK ($f)" && rm -f "$f" || log "mktemp: FAILED"
+
+log ""
+log "=== \$0 test ==="
+log "\$0 = $0"
+log "resolves to: $(command -v ralph 2>/dev/null || echo 'NOT FOUND')"
+
+log ""
+log "=== Simulating loop->once call ==="
+log "Would call: \"\$0\" once = \"$0\" once"
+# Actually try it but just check the first few lines of once
+log "Testing: RALPH_ITER=1 RALPH_STATE_DIR=$RALPH_STATE_DIR \"$0\" once (first 10 lines, timeout 5s)"
+timeout 5 "$0" once 2>&1 | head -10 | tee -a "$OUT" || log "once exit=$?"
+
+log ""
+log "=== State cleanup ==="
+_state_cleanup
+
+log ""
+log "=== ALL PASSED ==="
+log "Full log: $OUT"

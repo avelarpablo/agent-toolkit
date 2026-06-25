@@ -422,7 +422,7 @@ _preflight() {
     log "preflight: claude auth verified (cached)"
     claude_check="OK"
   else
-    claude_check=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --print 'reply: OK' 2>&1 | head -1) || true
+    claude_check=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --model claude-haiku-4-5-20251001 --print 'reply: OK' 2>&1 | head -1) || true
     if [[ "$claude_check" == "OK" ]]; then
       touch "$_auth_cache_file"
     else
@@ -1205,6 +1205,8 @@ SUBCOMMANDS
   resume RUN_ID     retry a previous interrupted run
   schedule          manage scheduled runs (list / show / logs / cancel)
   ping [flags]      minimal Claude session (keeps usage counter alive)
+  schedule-pings    schedule pings for a full day (default 04:00–22:00)
+  clean-pings       cancel all pending ping schedules (or for a specific date)
   check             verify auth, routing, and sub-repos
 
 ENV
@@ -2032,7 +2034,7 @@ check)
 
   echo "── Auth ──"
   echo -n "  claude : "
-  result=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --print 'reply: OK' 2>&1 | head -1) || true
+  result=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --model claude-haiku-4-5-20251001 --print 'reply: OK' 2>&1 | head -1) || true
   echo "$result" | grep -qi "OK" && echo "✓" || echo "✗  $result"
   echo -n "  gh     : "; gh api user --jq '.login' 2>&1 && true
   echo -n "  codex  : "; CODEX_HOME="$CODEX_HOME" codex --version 2>&1 | head -1
@@ -2122,6 +2124,107 @@ init)
   ;;
 
 # ─────────────────────────────────────────────────────────────────────────────
+clean-pings)
+  CP_DATE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        cat <<'CPEOF'
+ralph-core clean-pings — cancel pending ping schedules
+
+USAGE
+  ./ralph/ralph-core clean-pings              # cancel ALL pending pings
+  ./ralph/ralph-core clean-pings YYYY-MM-DD   # cancel pings for a specific date
+CPEOF
+        exit 0
+        ;;
+      -*) die "unknown flag: $1" ;;
+      *)  CP_DATE="$1"; shift ;;
+    esac
+  done
+
+  [[ ! -d "$SCHED_DIR" ]] && { log "No schedules directory — nothing to clean."; exit 0; }
+
+  _cp_count=0
+  for _cp_file in "$SCHED_DIR"/sched-*.json; do
+    [[ -f "$_cp_file" ]] || continue
+    _cp_parsed=$(python3 "$LIB" json-get "$_cp_file" command status run_at backend backend_id job_id 2>/dev/null) || continue
+    IFS=$'\t' read -r _cp_cmd _cp_status _cp_run_at _cp_backend _cp_backend_id _cp_job_id <<< "$_cp_parsed"
+
+    [[ "$_cp_cmd" != "ping" ]] && continue
+    [[ "$_cp_status" != "pending" ]] && continue
+
+    if [[ -n "$CP_DATE" ]]; then
+      [[ "$_cp_run_at" != "$CP_DATE"* ]] && continue
+    fi
+
+    _sched_cancel "$_cp_job_id" "$_cp_backend" "$_cp_backend_id" 2>/dev/null || true
+    rm -f "$_cp_file"
+    _cp_run_at_short="${_cp_run_at//T/ }"
+    log "Cancelled: $_cp_job_id (${_cp_run_at_short})"
+    _cp_count=$((_cp_count + 1))
+  done
+
+  log "────────────────────────────────────────────"
+  log "Cancelled $_cp_count ping schedule(s)${CP_DATE:+ for $CP_DATE}"
+  log "────────────────────────────────────────────"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+schedule-pings)
+  SP_START="04:00" SP_END="22:00" SP_DATE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        cat <<'SPEOF'
+ralph-core schedule-pings — schedule pings for a full day
+
+USAGE
+  ./ralph/ralph-core schedule-pings [YYYY-MM-DD] [--start HH:MM] [--end HH:MM]
+
+FLAGS
+  YYYY-MM-DD       target date (default: today)
+  --start HH:MM    first ping time (default: 04:00)
+  --end HH:MM      latest allowed ping time (default: 22:00)
+SPEOF
+        exit 0
+        ;;
+      --start) [[ $# -lt 2 || -z "${2:-}" ]] && die "--start requires HH:MM"; SP_START="$2"; shift 2 ;;
+      --end)   [[ $# -lt 2 || -z "${2:-}" ]] && die "--end requires HH:MM";   SP_END="$2";   shift 2 ;;
+      -*) die "unknown flag: $1" ;;
+      *)  SP_DATE="$1"; shift ;;
+    esac
+  done
+
+  [[ -z "$SP_DATE" ]] && SP_DATE=$(date '+%Y-%m-%d')
+
+  IFS=: read -r _sp_sh _sp_sm <<< "$SP_START"
+  IFS=: read -r _sp_eh _sp_em <<< "$SP_END"
+  _sp_sh=$((10#$_sp_sh)); _sp_sm=$((10#$_sp_sm))
+  _sp_eh=$((10#$_sp_eh)); _sp_em=$((10#$_sp_em))
+
+  _sp_interval=302  # 5h02m
+  _sp_h=$_sp_sh _sp_m=$_sp_sm _sp_count=0
+
+  log "Scheduling pings for $SP_DATE ($(printf '%02d:%02d' $_sp_sh $_sp_sm) – $(printf '%02d:%02d' $_sp_eh $_sp_em))"
+
+  while (( _sp_h * 60 + _sp_m < _sp_eh * 60 + _sp_em )); do
+    _sp_time=$(printf '%s %02d:%02d' "$SP_DATE" "$_sp_h" "$_sp_m")
+    log "  → ralph ping --schedule \"$_sp_time\""
+    "$0" ping --schedule "$_sp_time"
+    _sp_count=$((_sp_count + 1))
+
+    _sp_m=$((_sp_m + _sp_interval))
+    _sp_h=$((_sp_h + _sp_m / 60))
+    _sp_m=$((_sp_m % 60))
+  done
+
+  log "────────────────────────────────────────────"
+  log "Scheduled $_sp_count ping(s) for $SP_DATE"
+  log "────────────────────────────────────────────"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
 ping)
   PING_SCHEDULE=""
   while [[ $# -gt 0 ]]; do
@@ -2141,12 +2244,8 @@ ping)
     _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
     _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
 
-    RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE=1 RALPH_PREFLIGHT_SCHEDULE_EPOCH="$_sched_epoch"
-    if ! _preflight "" "" "0"; then
-      unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
-      exit 1
-    fi
-    unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+    command -v claude &>/dev/null || die "preflight NO_GO: 'claude' not found on PATH"
+    JOURNAL_PREFLIGHT_DECISION="GO"
 
     _sched_stored_cmd="ping"
     _sched_flags_json=$(python3 "$LIB" json-build "ping=true")
@@ -2164,7 +2263,7 @@ ping)
     exit 0
   fi
 
-  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --print 'reply: pong' 2>&1 | head -1
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" claude --model claude-haiku-4-5-20251001 --print 'reply: pong' 2>&1 | head -1
   log "ping complete"
   ;;
 

@@ -1,0 +1,15 @@
+#!/bin/bash
+# ralph-dg — discount-genie-core multi-repo wrapper for ralph
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CORE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)/discount-genie-core"
+
+export RALPH_REPO="shopstackio/discount-genie-core"
+export RALPH_DIR="$CORE_ROOT/ralph"
+export RALPH_HOOKS="$SCRIPT_DIR/hooks.sh"
+export RALPH_PROTECTED_BRANCHES="main develop staging"
+export RALPH_BASE_BRANCH="develop"
+export RALPH_CODEX_REVIEW_EXTRA="5. Multi-tenancy — any code that could leak data across tenants?"
+export RALPH_CROSS_REPO_KEYWORDS='{"frontend":["docker-compose","alembic","celery","fastapi","sqlalchemy","pytest","uvicorn"],"backend":["shopify.app.toml","polaris","remix","extensions/","fly.toml","vite","shopify cli"]}'
+
+cd "$CORE_ROOT" || { echo "[ralph-dg] discount-genie-core not found at $CORE_ROOT"; exit 1; }
+exec "$SCRIPT_DIR/../ralph/ralph" "$@"

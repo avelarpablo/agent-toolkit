@@ -249,14 +249,17 @@ sync_runners() {
       echo "$new_block" | sed 's/^/    /'
     else
       # Replace the block in-place
-      local tmp
+      local tmp new_tmp
       tmp="$(mktemp)"
-      awk -v begin="$SENTINEL_BEGIN" -v end="$SENTINEL_END" -v new="$new_block" '
-        $0 == begin { print new; skip=1; next }
+      new_tmp="$(mktemp)"
+      echo "$new_block" > "$new_tmp"
+      awk -v begin="$SENTINEL_BEGIN" -v end="$SENTINEL_END" -v newfile="$new_tmp" '
+        $0 == begin { while ((getline line < newfile) > 0) print line; close(newfile); skip=1; next }
         $0 == end { skip=0; next }
         !skip { print }
       ' "$ZSHRC" > "$tmp"
       mv "$tmp" "$ZSHRC"
+      rm -f "$new_tmp"
       echo "  runners: updated managed block in $ZSHRC"
     fi
   else

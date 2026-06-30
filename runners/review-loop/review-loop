@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB="$SCRIPT_DIR/lib/helpers.py"
+SCHEMA="$SCRIPT_DIR/schemas/round-schema.json"
+PROMPTS_DIR="$SCRIPT_DIR/prompts"
+REVIEWS_DIR="$SCRIPT_DIR/reviews"
+
+CLAUDE_MODEL="${REVIEW_CLAUDE_MODEL:-claude-opus-4-6}"
+CODEX_MODEL="${REVIEW_CODEX_MODEL:-gpt-5.5}"
+
+# ── Argument parsing ────────────────────────────────────────────────────────
+
+CRITERIA=""
+PR=""
+BASE="develop"
+ROUNDS=3
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+review-loop — adversarial code review (Claude + Codex)
+
+Usage:
+  review-loop --criteria <path> [options]
+
+Options:
+  --criteria <path>    Criteria file or directory (required)
+  --pr <N|URL>         PR number or GitHub URL to review
+  --base <branch>      Base branch for diff (default: develop)
+  --rounds <N>         Number of review rounds (default: 3)
+  --dry-run            Show what would happen without running reviews
+
+Examples:
+  review-loop --criteria docs/PR_REVIEW_CRITERIA.md --pr 42
+  review-loop --criteria docs/agentic/ --base develop
+  review-loop --criteria criteria.md --pr 42 --rounds 2
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --criteria) CRITERIA="$2"; shift 2 ;;
+    --pr)       PR="$2"; shift 2 ;;
+    --base)     BASE="$2"; shift 2 ;;
+    --rounds)   ROUNDS="$2"; shift 2 ;;
+    --dry-run)  DRY_RUN=1; shift ;;
+    -h|--help)  usage; exit 0 ;;
+    *)          echo "error: unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$CRITERIA" ]]; then
+  echo "error: --criteria is required." >&2
+  echo "" >&2
+  echo "The review-loop tool requires explicit criteria docs to grade against." >&2
+  echo "For a general-purpose review without criteria, use: /code-review" >&2
+  exit 1
+fi
+
+if [[ ! -e "$CRITERIA" ]]; then
+  echo "error: criteria path not found: $CRITERIA" >&2
+  exit 1
+fi
+
+# ── Diff acquisition ────────────────────────────────────────────────────────
+
+get_diff() {
+  if [[ -n "$PR" ]]; then
+    local pr_num="$PR"
+    # Strip GitHub URL to PR number if needed
+    if [[ "$PR" == http* ]]; then
+      pr_num="${PR##*/}"
+    fi
+    gh pr diff "$pr_num"
+  else
+    git diff "$BASE"...HEAD
+  fi
+}
+
+DIFF=$(get_diff)
+
+if [[ -z "$DIFF" ]]; then
+  echo "No changes to review."
+  exit 0
+fi
+
+# ── Target label for artifact naming ────────────────────────────────────────
+
+if [[ -n "$PR" ]]; then
+  TARGET="PR-${PR##*/}"
+else
+  BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+  TARGET="branch-${BRANCH}"
+fi
+
+TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+REVIEW_FILE="$REVIEWS_DIR/${TIMESTAMP}-${TARGET}.md"
+
+# ── Dry run ─────────────────────────────────────────────────────────────────
+
+if [[ "$DRY_RUN" == 1 ]]; then
+  DIFF_LINES=$(echo "$DIFF" | wc -l | tr -d ' ')
+  CRITERIA_DESC="$CRITERIA"
+  if [[ -d "$CRITERIA" ]]; then
+    CRITERIA_DESC="$CRITERIA/ ($(find "$CRITERIA" -name '*.md' | wc -l | tr -d ' ') files)"
+  fi
+  echo "review-loop dry run"
+  echo "  criteria:  $CRITERIA_DESC"
+  echo "  target:    $TARGET"
+  echo "  base:      $BASE"
+  echo "  rounds:    $ROUNDS"
+  echo "  diff:      $DIFF_LINES lines"
+  echo "  claude:    $CLAUDE_MODEL"
+  echo "  codex:     $CODEX_MODEL"
+  echo "  output:    $REVIEW_FILE"
+  exit 0
+fi
+
+# ── Run directory setup ─────────────────────────────────────────────────────
+
+mkdir -p "$REVIEWS_DIR"
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+echo "$DIFF" > "$WORK_DIR/diff.txt"
+
+echo "review-loop: $ROUNDS rounds, target=$TARGET, criteria=$CRITERIA"
+
+# ── Round execution ─────────────────────────────────────────────────────────
+
+run_claude_round() {
+  local round_num="$1"
+  local template="$2"
+  shift 2
+  local prior_args=("$@")
+
+  echo "  round $round_num (Claude/$CLAUDE_MODEL)..."
+
+  local build_args=(
+    --template "$template"
+    --criteria "$CRITERIA"
+    --schema "$SCHEMA"
+  )
+  if [[ ${#prior_args[@]} -gt 0 ]]; then
+    build_args+=(--prior "${prior_args[@]}")
+  fi
+
+  local prompt
+  prompt=$(cat "$WORK_DIR/diff.txt" | python3 "$LIB" build-prompt "${build_args[@]}")
+
+  local raw_output
+  if ! raw_output=$(echo "$prompt" | claude -p --output-format json --model "$CLAUDE_MODEL" 2>/dev/null); then
+    echo "    warning: claude invocation failed" >&2
+    return 1
+  fi
+
+  echo "$raw_output" | python3 "$LIB" parse-claude --output "$WORK_DIR/round${round_num}.json"
+  echo "    done."
+}
+
+run_codex_round() {
+  local round_num="$1"
+  local template="$2"
+  shift 2
+  local prior_args=("$@")
+
+  echo "  round $round_num (Codex/$CODEX_MODEL)..."
+
+  local build_args=(
+    --template "$template"
+    --criteria "$CRITERIA"
+    --schema "$SCHEMA"
+  )
+  if [[ ${#prior_args[@]} -gt 0 ]]; then
+    build_args+=(--prior "${prior_args[@]}")
+  fi
+
+  local prompt
+  prompt=$(cat "$WORK_DIR/diff.txt" | python3 "$LIB" build-prompt "${build_args[@]}")
+
+  if ! echo "$prompt" | codex exec -m "$CODEX_MODEL" \
+    --output-schema "$SCHEMA" \
+    -o "$WORK_DIR/round${round_num}.json" \
+    - 2>/dev/null; then
+    echo "    warning: codex invocation failed" >&2
+    return 1
+  fi
+
+  echo "    done."
+}
+
+# ── Orchestration ───────────────────────────────────────────────────────────
+
+round_files=()
+
+for ((r = 1; r <= ROUNDS; r++)); do
+  prior=()
+  for ((p = 1; p < r; p++)); do
+    if [[ -f "$WORK_DIR/round${p}.json" ]]; then
+      prior+=("$WORK_DIR/round${p}.json")
+    fi
+  done
+
+  if (( r % 2 == 1 )); then
+    # Claude round (odd)
+    if (( r == 1 )); then
+      template="$PROMPTS_DIR/round1.md"
+    else
+      template="$PROMPTS_DIR/round3.md"
+    fi
+
+    if ! run_claude_round "$r" "$template" "${prior[@]}"; then
+      if (( r == 1 )); then
+        echo "error: round 1 failed, aborting (nothing to challenge)" >&2
+        exit 1
+      fi
+      echo "  skipping round $r due to failure, assembling with available data"
+      continue
+    fi
+  else
+    # Codex round (even)
+    template="$PROMPTS_DIR/round2.md"
+
+    if ! run_codex_round "$r" "$template" "${prior[@]}"; then
+      echo "  skipping round $r due to failure, assembling with available data"
+      continue
+    fi
+  fi
+
+  if [[ -f "$WORK_DIR/round${r}.json" ]]; then
+    round_files+=("$WORK_DIR/round${r}.json")
+  fi
+done
+
+# ── Artifact assembly ───────────────────────────────────────────────────────
+
+if [[ ${#round_files[@]} -eq 0 ]]; then
+  echo "error: no rounds completed successfully" >&2
+  exit 1
+fi
+
+python3 "$LIB" assemble \
+  --round-files "${round_files[@]}" \
+  --target "$TARGET" \
+  --criteria "$CRITERIA" \
+  --output "$REVIEW_FILE"
+
+echo ""
+echo "review complete: $REVIEW_FILE"

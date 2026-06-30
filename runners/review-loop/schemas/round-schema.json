@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings"],
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "criteria_rule", "description", "file", "line"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "concern", "nit"]
+          },
+          "criteria_rule": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "stance": {
+            "type": "string",
+            "enum": ["new", "agree", "dispute"]
+          },
+          "references_finding": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

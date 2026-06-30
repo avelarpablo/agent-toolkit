@@ -1,0 +1,4 @@
+{
+  "entrypoint": "review-loop",
+  "description": "Adversarial code review — multi-round Claude + Codex review against criteria docs"
+}

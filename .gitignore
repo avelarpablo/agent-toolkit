@@ -1,5 +1,6 @@
 .grill/
 .toolkit/
+__pycache__/
 
 # ralph runtime artifacts
 runners/ralph/schedules/
@@ -7,3 +8,4 @@ runners/ralph/runs/
 runners/ralph/logs/
 runners/ralph/reviews/
 runners/ralph/.run.lock
+runners/review-loop/reviews/

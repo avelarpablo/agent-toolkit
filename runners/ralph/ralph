@@ -1,0 +1,2432 @@
+#!/bin/bash
+# ralph — AFK agent runner
+#
+# Works with any git repo. Auto-detects repo root and GitHub slug from the
+# git remote. Multi-repo workspaces override routing via RALPH_HOOKS.
+#
+# Usage:
+#   ralph once [--issue N] [--prd N] [--allow-risky] [--schedule "YYYY-MM-DD HH:MM"]
+#   ralph loop [--max N] [--prd N] [--allow-risky] [--schedule "YYYY-MM-DD HH:MM"]
+#   ralph resume RUN_ID [--schedule "YYYY-MM-DD HH:MM"]
+#   ralph resume list
+#   ralph schedule list|show|logs|cancel JOB_ID
+#   ralph review <sha> [sha ...] -- <issue> [issue ...]
+#   ralph check
+#   ralph init
+
+set -euo pipefail
+[[ "${RALPH_VERBOSE:-0}" == "1" ]] && set -x
+
+# ── Script + repo detection ──────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "[ralph] not in a git repo"; exit 1; }
+
+# ── Workspace constants ──────────────────────────────────────────────────────
+RALPH_DIR="${RALPH_DIR:-$REPO_ROOT/ralph}"
+RALPH_REPO="${RALPH_REPO:-}"
+if [[ -z "$RALPH_REPO" ]]; then
+  _remote_url=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null) || { echo "[ralph] no origin remote"; exit 1; }
+  RALPH_REPO=$(echo "$_remote_url" | sed -E 's|.*[:/]([^/]+/[^/]+)\.git$|\1|; s|.*[:/]([^/]+/[^/]+)$|\1|')
+fi
+if [[ -f "$RALPH_DIR/review-schema.json" ]]; then
+  SCHEMA="$RALPH_DIR/review-schema.json"
+elif [[ -f "$SCRIPT_DIR/review-schema.json" ]]; then
+  SCHEMA="$SCRIPT_DIR/review-schema.json"
+elif [[ -f "$HOME/.ralph/review-schema.json" ]]; then
+  SCHEMA="$HOME/.ralph/review-schema.json"
+else
+  SCHEMA="$RALPH_DIR/review-schema.json"
+fi
+LOCK_FILE="$RALPH_DIR/.run.lock"
+RUN_DIR="$RALPH_DIR/runs"
+SCHED_DIR="$RALPH_DIR/schedules"
+SCHED_LOG_DIR="$RALPH_DIR/logs/scheduled"
+
+# ── Lib detection (script dir → ralph dir → ~/.ralph/lib/) ───────────────────
+if [[ -f "$SCRIPT_DIR/lib/core.py" ]]; then
+  LIB="$SCRIPT_DIR/lib/core.py"
+elif [[ -f "$RALPH_DIR/lib/core.py" ]]; then
+  LIB="$RALPH_DIR/lib/core.py"
+elif [[ -f "$HOME/.ralph/lib/core.py" ]]; then
+  LIB="$HOME/.ralph/lib/core.py"
+else
+  echo "[ralph] lib/core.py not found"; exit 1
+fi
+
+# ── Account resolution (from ~/.ralph/accounts.toml, same as global ralph) ───
+ACCOUNTS_FILE="$HOME/.ralph/accounts.toml"
+
+_flatten_toml() {
+  python3 -c "
+import sys, re
+section = ''
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line or line.startswith('#'):
+        continue
+    m = re.match(r'\[(.+)\]', line)
+    if m:
+        section = m.group(1) + '.'
+        continue
+    if '=' in line:
+        print(section + line)
+" "$1"
+}
+
+_resolve_account() {
+  ACCOUNT="default"
+  unset CLAUDE_CONFIG_DIR
+  export CODEX_HOME="$HOME/.codex"
+  GH_CONFIG_DIR_RESOLVED=""
+
+  if [[ ! -f "$ACCOUNTS_FILE" ]]; then
+    return
+  fi
+
+  local best_name="" best_len=0
+  while IFS= read -r line; do
+    local key="${line%%=*}"
+    local val="${line#*=}"
+    key=$(echo "$key" | xargs)
+    val=$(echo "$val" | xargs | tr -d '"' | sed "s|^~|$HOME|")
+    if [[ "$key" == accounts.*.path ]]; then
+      local name="${key#accounts.}"
+      name="${name%.path}"
+      if [[ "$REPO_ROOT" == "$val"/* || "$REPO_ROOT" == "$val" ]]; then
+        if (( ${#val} > best_len )); then
+          best_name="$name"
+          best_len=${#val}
+        fi
+      fi
+    fi
+  done < <(_flatten_toml "$ACCOUNTS_FILE")
+
+  if [[ -z "$best_name" ]]; then
+    return
+  fi
+
+  ACCOUNT="$best_name"
+  while IFS= read -r line; do
+    local key="${line%%=*}"
+    local val="${line#*=}"
+    key=$(echo "$key" | xargs)
+    val=$(echo "$val" | xargs | tr -d '"' | sed "s|^~|$HOME|")
+    case "$key" in
+      "accounts.${best_name}.claude_config_dir") export CLAUDE_CONFIG_DIR="$val" ;;
+      "accounts.${best_name}.codex_home")        export CODEX_HOME="$val" ;;
+      "accounts.${best_name}.gh_config_dir")     GH_CONFIG_DIR_RESOLVED="$val" ;;
+      "accounts.${best_name}.gh_host")           export GH_HOST="$val" ;;
+    esac
+  done < <(_flatten_toml "$ACCOUNTS_FILE")
+
+  if [[ -n "$GH_CONFIG_DIR_RESOLVED" ]]; then
+    export GH_CONFIG_DIR="$GH_CONFIG_DIR_RESOLVED"
+  fi
+}
+
+_resolve_account
+
+MODEL="${RALPH_MODEL:-claude-opus-4-6}"
+EFFORT="${RALPH_EFFORT:-medium}"
+CODEX_MODEL="${RALPH_CODEX_MODEL:-gpt-5.5}"
+
+# ── Protected branches ───────────────────────────────────────────────────────
+PROTECTED_BRANCHES="${RALPH_PROTECTED_BRANCHES:-main}"
+FEATURE_BRANCH="${RALPH_FEATURE_BRANCH:-}"
+
+# ── Colors + logging (all to stderr) ─────────────────────────────────────────
+_R="\033[0m"; _BOLD="\033[1m"; _DIM="\033[2m"
+_RALPH="\033[34m"; _WARN="\033[33m"; _ERR="\033[31m"; _OK="\033[32m"
+
+log()  { printf "${_RALPH}${_BOLD}[ralph]${_R} ${_DIM}$(date '+%H:%M:%S')${_R} %s\n" "$*" >&2; }
+warn() { printf "${_WARN}${_BOLD}[ralph]${_R} ${_DIM}$(date '+%H:%M:%S')${_R} ${_WARN}WARN${_R}  %s\n" "$*" >&2; }
+die()  { printf "${_ERR}${_BOLD}[ralph]${_R} ${_DIM}$(date '+%H:%M:%S')${_R} ${_ERR}ERROR${_R} %s\n" "$*" >&2; exit 1; }
+
+# ── State + footer libraries ──────────────────────────────────────────────────
+if [[ -f "$SCRIPT_DIR/lib/state.sh" ]]; then
+  source "$SCRIPT_DIR/lib/state.sh"
+  source "$SCRIPT_DIR/lib/footer.sh"
+elif [[ -f "$HOME/.ralph/lib/state.sh" ]]; then
+  source "$HOME/.ralph/lib/state.sh"
+  source "$HOME/.ralph/lib/footer.sh"
+fi
+
+# ── Hooks (wrapper overrides for routing, init, etc.) ────────────────────────
+if [[ -n "${RALPH_HOOKS:-}" && -f "$RALPH_HOOKS" ]]; then
+  source "$RALPH_HOOKS"
+fi
+
+# ── Workspace lock ───────────────────────────────────────────────────────────
+
+_lock_read_state() {
+  local _state
+  _state=$(python3 "$LIB" json-get "$LOCK_FILE" pid host command started 2>/dev/null) \
+    || _state=$'\t\t\t'
+  IFS=$'\t' read -r _LOCK_PID _LOCK_HOST _LOCK_CMD _LOCK_STARTED <<< "$_state"
+}
+
+_lock_acquire() {
+  local cmd_str="${1:-}"
+  local hostname
+  hostname=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "unknown")
+
+  local _lock_payload
+  _lock_payload=$(python3 "$LIB" lock-payload "$$" "$hostname" "$cmd_str" "$REPO_ROOT")
+
+  if ( set -o noclobber; printf '%s\n' "$_lock_payload" > "$LOCK_FILE" ) 2>/dev/null; then
+    log "Lock acquired (PID $$)"
+    return 0
+  fi
+
+  if [[ -f "$LOCK_FILE" ]]; then
+    _lock_read_state
+    local lock_pid="$_LOCK_PID" lock_host="$_LOCK_HOST"
+
+    if [[ -z "$lock_pid" ]]; then
+      die "workspace is locked (lock metadata unreadable — retry; remove $LOCK_FILE only if no ralph is running)"
+    fi
+
+    if [[ -n "$lock_host" && "$lock_host" != "$hostname" ]]; then
+      warn "Lock held by different host ($lock_host)"
+      cat "$LOCK_FILE" >&2
+      die "lock held by different host '$lock_host'"
+    fi
+
+    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      die "workspace is locked by active PID $lock_pid (command: ${_LOCK_CMD:-?}) — stop it or remove $LOCK_FILE"
+    fi
+
+    local _stale_pid_seen="$lock_pid"
+    local _stale_guard="${LOCK_FILE}.stale_lock"
+    if ! mkdir "$_stale_guard" 2>/dev/null; then
+      die "workspace is locked (concurrent stale cleanup in progress — retry)"
+    fi
+
+    _lock_read_state
+    if [[ "$_LOCK_PID" != "$_stale_pid_seen" ]]; then
+      rmdir "$_stale_guard" 2>/dev/null || true
+      die "lock was replaced by another process while waiting"
+    fi
+
+    log "Removing stale lock (PID ${lock_pid:-?} is dead)"
+    rm -f "$LOCK_FILE"
+    local _acquired=0
+    ( set -o noclobber; printf '%s\n' "$_lock_payload" > "$LOCK_FILE" ) 2>/dev/null && _acquired=1
+    rmdir "$_stale_guard" 2>/dev/null || true
+
+    if [[ $_acquired -eq 1 ]]; then
+      log "Lock acquired (PID $$)"
+      return 0
+    fi
+  fi
+
+  die "workspace is locked by another process"
+}
+
+_lock_release() {
+  if [[ -f "$LOCK_FILE" ]]; then
+    local lock_pid
+    lock_pid=$(python3 "$LIB" json-get "$LOCK_FILE" pid 2>/dev/null || echo "")
+    if [[ "$lock_pid" == "$$" ]]; then
+      rm -f "$LOCK_FILE"
+    fi
+  fi
+}
+
+# ── Schedule OS backends ─────────────────────────────────────────────────────
+
+_sched_register() {
+  local job_id="$1" run_at_epoch="$2" run_at_iso="$3" log_path="$4"
+  _SCHED_BACKEND="none"
+  _SCHED_BACKEND_ID="none"
+
+  local os ralph_bin="$0"
+  os=$(uname -s)
+
+  local _sched_env_keys=(RALPH_FEATURE_BRANCH RALPH_MODEL CLAUDE_CONFIG_DIR CODEX_HOME GH_CONFIG_DIR RALPH_DIFF_LINES)
+  local _ralph_var
+  for _ralph_var in $(compgen -v RALPH_ 2>/dev/null || true); do
+    local _already=0 _existing
+    for _existing in "${_sched_env_keys[@]}"; do
+      [[ "$_existing" == "$_ralph_var" ]] && { _already=1; break; }
+    done
+    [[ "$_already" -eq 0 ]] && _sched_env_keys+=("$_ralph_var")
+  done
+
+  if [[ "$os" == "Darwin" ]]; then
+    local plist_id="com.ralph.${job_id}"
+    local plist_path="$HOME/Library/LaunchAgents/${plist_id}.plist"
+    local cal_parts
+    cal_parts=$(python3 "$LIB" plist-cal "$run_at_epoch")
+    read -r _pm _pd _ph _pmin <<< "$cal_parts"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    local _plist_env_extra="" _k _v
+    for _k in "${_sched_env_keys[@]}"; do
+      _v="${!_k:-}"
+      if [[ -n "$_v" ]]; then
+        _v="${_v//&/&amp;}"; _v="${_v//</&lt;}"; _v="${_v//>/&gt;}"
+        _plist_env_extra+="        <key>${_k}</key>"$'\n'"        <string>${_v}</string>"$'\n'
+      fi
+    done
+    cat > "$plist_path" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${plist_id}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${ralph_bin}</string>
+        <string>run-scheduled</string>
+        <string>${job_id}</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key><integer>${_pm}</integer>
+        <key>Day</key><integer>${_pd}</integer>
+        <key>Hour</key><integer>${_ph}</integer>
+        <key>Minute</key><integer>${_pmin}</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>${log_path}</string>
+    <key>WorkingDirectory</key>
+    <string>${REPO_ROOT}</string>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${PATH}</string>
+        <key>HOME</key>
+        <string>${HOME}</string>
+${_plist_env_extra}    </dict>
+</dict>
+</plist>
+PLIST
+    if ! launchctl load "$plist_path" 2>/dev/null; then
+      warn "launchctl load failed — OS job not registered"
+      rm -f "$plist_path"
+      return 1
+    fi
+    _SCHED_BACKEND="launchd"
+    _SCHED_BACKEND_ID="$plist_id"
+
+  else
+    local _sched_setenv_args=() _sched_env_prefix="" _k _v
+    for _k in "${_sched_env_keys[@]}"; do
+      _v="${!_k:-}"
+      if [[ -n "$_v" ]]; then
+        _sched_setenv_args+=( "--setenv=${_k}=${_v}" )
+        _sched_env_prefix+=$(printf "%s='%s' " "$_k" "${_v//\'/\'\\\'\'}")
+      fi
+    done
+
+    if systemctl --user status &>/dev/null 2>&1 && command -v systemd-run &>/dev/null; then
+      local unit_name="ralph-${job_id}" cal_str
+      cal_str=$(date -d "@$run_at_epoch" '+%Y-%m-%d %H:%M:00' 2>/dev/null \
+        || python3 -c "from datetime import datetime; print(datetime.fromtimestamp(int('$run_at_epoch')).strftime('%Y-%m-%d %H:%M:00'))")
+      systemd-run --user \
+        --on-calendar="$cal_str" --unit="$unit_name" \
+        --working-directory="$REPO_ROOT" --setenv="HOME=$HOME" \
+        ${_sched_setenv_args[@]+"${_sched_setenv_args[@]}"} \
+        /bin/sh -c '"$1" run-scheduled "$2" >> "$3" 2>&1' _ "$ralph_bin" "$job_id" "$log_path" \
+        >> "$log_path" 2>&1 || { warn "systemd-run failed"; return 1; }
+      _SCHED_BACKEND="systemd"
+      _SCHED_BACKEND_ID="$unit_name"
+
+    elif command -v at &>/dev/null; then
+      local at_time
+      at_time=$(date -d "@$run_at_epoch" '+%H:%M %Y-%m-%d' 2>/dev/null \
+        || python3 -c "from datetime import datetime; print(datetime.fromtimestamp(int('$run_at_epoch')).strftime('%H:%M %Y-%m-%d'))")
+      local at_out
+      at_out=$(printf "cd '%s' && %s'%s' run-scheduled '%s' >> '%s' 2>&1\n" \
+        "$REPO_ROOT" "$_sched_env_prefix" "$ralph_bin" "$job_id" "$log_path" | at "$at_time" 2>&1) \
+        || { warn "at scheduling failed: $at_out"; return 1; }
+      local at_job_id
+      at_job_id=$(echo "$at_out" | grep -oE 'job [0-9]+' | grep -oE '[0-9]+' | head -1 || echo "?")
+      _SCHED_BACKEND="at"
+      _SCHED_BACKEND_ID="$at_job_id"
+
+    else
+      warn "No supported scheduler found (need launchd/systemd-run/at)"
+      return 1
+    fi
+  fi
+}
+
+_sched_cancel() {
+  local job_id="$1" backend="$2" backend_id="$3"
+  case "$backend" in
+    launchd)
+      local plist_path="$HOME/Library/LaunchAgents/${backend_id}.plist"
+      launchctl unload "$plist_path" 2>/dev/null || true
+      rm -f "$plist_path"
+      ;;
+    systemd)
+      systemctl --user stop "${backend_id}.timer" 2>/dev/null || true
+      systemctl --user disable "${backend_id}.timer" 2>/dev/null || true
+      ;;
+    at)
+      [[ "$backend_id" != "?" && "$backend_id" =~ ^[0-9]+$ ]] && atrm "$backend_id" 2>/dev/null || true
+      ;;
+    *) warn "_sched_cancel: unknown backend '$backend'" ;;
+  esac
+}
+
+_schedule_create() {
+  local _sc_cmd="$1" _sc_flags="$2" _sc_allow_risky="$3"
+  local _sc_run_at_iso="$4" _sc_run_at_epoch="$5"
+  local _sc_pf_decision="${6:-GO}" _sc_pf_warnings="${7:-}"
+  local _sc_created_at
+  _sc_created_at=$(date '+%Y-%m-%dT%H:%M:%S')
+
+  _job_id="sched-$(python3 "$LIB" gen-id)"
+  mkdir -p "$SCHED_DIR" "$SCHED_LOG_DIR"
+  _sched_log_path="$SCHED_LOG_DIR/${_job_id}.log"
+
+  python3 "$LIB" sched-create "$SCHED_DIR" \
+    --job-id "$_job_id" --command "$_sc_cmd" --flags-json "$_sc_flags" \
+    --run-at "$_sc_run_at_iso" --created-at "$_sc_created_at" \
+    --allow-risky "$_sc_allow_risky" --log-path "$_sched_log_path" \
+    --preflight-decision "$_sc_pf_decision" --preflight-warnings "$_sc_pf_warnings"
+
+  _SCHED_BACKEND="none"; _SCHED_BACKEND_ID="none"
+  if _sched_register "$_job_id" "$_sc_run_at_epoch" "$_sc_run_at_iso" "$_sched_log_path"; then
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_job_id" \
+      "backend=${_SCHED_BACKEND}" "backend_id=${_SCHED_BACKEND_ID}"
+  else
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_job_id" "status=failed"
+    warn "schedule: OS job registration failed — marked as failed"
+    return 1
+  fi
+}
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+
+_claude_reset_epoch() {
+  python3 "$LIB" reset-epoch "$1"
+}
+
+_is_usage_limit_message() {
+  python3 "$LIB" is-exhaustion "$1" 2>/dev/null
+}
+
+_claude_auth_cache_file() {
+  python3 "$LIB" auth-cache-path "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 2>/dev/null || echo "/tmp/.ralph_claude_auth_default"
+}
+
+_claude_auth_cache_valid() {
+  local cache_file
+  cache_file="$(_claude_auth_cache_file)"
+  [[ -f "$cache_file" ]] || return 1
+  local mtime now
+  mtime=$(stat -f%m "$cache_file" 2>/dev/null || stat -c%Y "$cache_file" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  [[ $(( now - mtime )) -lt "${RALPH_CLAUDE_AUTH_CACHE_TTL:-300}" ]]
+}
+
+_preflight_issue_body_checks() {
+  local issue_num="$1" route="$2"
+  local pf_raw
+  pf_raw=$(gh issue view "$issue_num" --repo "$RALPH_REPO" \
+    --json body,comments 2>/dev/null || echo '{"body":"","comments":[]}')
+  echo "$pf_raw" | python3 "$LIB" preflight-check "$route" 2>/dev/null || true
+}
+
+_preflight() {
+  local issue_num="${1:-}" route="${2:-}" allow_risky="${3:-0}" prd_cand_count="${4:-0}"
+  local warnings=()
+  JOURNAL_PREFLIGHT_DECISION="NO_GO"
+  JOURNAL_PREFLIGHT_WARNINGS=""
+
+  if ! command -v claude &>/dev/null; then
+    log "preflight NO_GO: 'claude' not found on PATH"
+    return 1
+  fi
+
+  local claude_check _auth_cache_file
+  _auth_cache_file="$(_claude_auth_cache_file)"
+  if [[ "${RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE:-0}" != "1" ]] && _claude_auth_cache_valid; then
+    log "preflight: claude auth verified (cached)"
+    claude_check="OK"
+  else
+    claude_check=$(claude --model claude-haiku-4-5-20251001 -p 'reply with exactly: OK' 2>&1 | head -1) || true
+    if [[ "$claude_check" == "OK" ]]; then
+      touch "$_auth_cache_file"
+    else
+      rm -f "$_auth_cache_file"
+    fi
+  fi
+  if [[ "$claude_check" != "OK" ]]; then
+    if [[ "${RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE:-0}" == "1" ]] && _is_usage_limit_message "$claude_check"; then
+      local reset_epoch="${RALPH_PREFLIGHT_USAGE_RESET_EPOCH:-}"
+      if [[ -z "$reset_epoch" ]]; then
+        reset_epoch=$(_claude_reset_epoch "$claude_check" 2>/dev/null || true)
+      fi
+      if [[ -n "$reset_epoch" && -n "${RALPH_PREFLIGHT_SCHEDULE_EPOCH:-}" && "$RALPH_PREFLIGHT_SCHEDULE_EPOCH" -gt "$reset_epoch" ]]; then
+        local reset_human
+        reset_human=$(date -r "$reset_epoch" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo "$reset_epoch")
+        log "preflight: usage limit detected; scheduled run is after reset ($reset_human) — GO"
+      elif [[ -z "$reset_epoch" ]]; then
+        warnings+=("Claude currently unavailable due to usage/session limit; reset time could not be determined")
+      else
+        log "preflight NO_GO: claude auth failed — ${claude_check:-no response}"
+        return 1
+      fi
+    else
+      log "preflight NO_GO: claude auth failed — ${claude_check:-no response}"
+      return 1
+    fi
+  fi
+
+  if ! gh api user --jq '.login' &>/dev/null; then
+    log "preflight NO_GO: gh not authenticated"
+    return 1
+  fi
+
+  if ! command -v codex &>/dev/null; then
+    log "preflight NO_GO: 'codex' not found on PATH"
+    return 1
+  fi
+
+  if [[ ! -f "$SCHEMA" ]]; then
+    log "preflight NO_GO: review-schema.json missing: $SCHEMA"
+    return 1
+  fi
+
+  if [[ ! -f "$HOME/.ralph/prompt.md" && ! -f "$RALPH_DIR/prompt.md" ]]; then
+    log "preflight NO_GO: no prompt.md found"
+    return 1
+  fi
+
+  if [[ -f "$LOCK_FILE" ]]; then
+    local hostname
+    hostname=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "unknown")
+    _lock_read_state
+
+    if [[ -z "$_LOCK_PID" ]]; then
+      log "preflight NO_GO: lock metadata unreadable"
+      return 1
+    fi
+    if [[ -n "$_LOCK_HOST" && "$_LOCK_HOST" != "$hostname" ]]; then
+      log "preflight NO_GO: lock held by different host '$_LOCK_HOST'"
+      return 1
+    fi
+    if [[ -n "$_LOCK_PID" ]] && kill -0 "$_LOCK_PID" 2>/dev/null; then
+      log "preflight NO_GO: workspace locked by active PID $_LOCK_PID (command: ${_LOCK_CMD:-?})"
+      return 1
+    fi
+    log "preflight: stale lock detected (PID ${_LOCK_PID:-?} dead) — will clean up on acquire"
+  fi
+
+  if [[ -n "$route" && "$route" != "default" ]]; then
+    local repo_dir
+    repo_dir=$(_repo_dir "$route")
+    if [[ ! -d "$repo_dir/.git" ]]; then
+      log "preflight NO_GO: target repo not a valid git repo: $repo_dir"
+      return 1
+    fi
+  fi
+
+  if [[ -n "$issue_num" ]]; then
+    while IFS= read -r _pf_w; do
+      [[ -n "$_pf_w" ]] && warnings+=("$_pf_w")
+    done < <(_preflight_issue_body_checks "$issue_num" "$route")
+  fi
+
+  [[ "$prd_cand_count" -gt 4 ]] && warnings+=("PRD child queue has $prd_cand_count candidates (> 4)")
+
+  if [[ ${#warnings[@]} -eq 0 ]]; then
+    JOURNAL_PREFLIGHT_DECISION="GO"
+    JOURNAL_PREFLIGHT_WARNINGS=""
+    log "preflight: GO"
+    return 0
+  fi
+
+  for w in "${warnings[@]}"; do warn "preflight WARN: $w"; done
+
+  local _w="" _wi
+  for _wi in "${warnings[@]}"; do
+    [[ -n "$_w" ]] && _w="${_w}|${_wi}" || _w="$_wi"
+  done
+  JOURNAL_PREFLIGHT_WARNINGS="$_w"
+
+  if [[ "$allow_risky" == "1" || "$allow_risky" == "true" ]]; then
+    JOURNAL_PREFLIGHT_DECISION="GO_WITH_WARNINGS"
+    log "preflight: GO_WITH_WARNINGS (--allow-risky set)"
+    return 0
+  else
+    JOURNAL_PREFLIGHT_DECISION="NO_GO"
+    log "preflight: NO_GO — pass --allow-risky to proceed"
+    return 1
+  fi
+}
+
+_preflight_issue_soft() {
+  local issue_num="${1:-}" route="${2:-}" allow_risky="${3:-0}"
+  local warnings=()
+  JOURNAL_PREFLIGHT_DECISION="NO_GO"
+  JOURNAL_PREFLIGHT_WARNINGS=""
+
+  if [[ -n "$issue_num" ]]; then
+    while IFS= read -r _pf_w; do
+      [[ -n "$_pf_w" ]] && warnings+=("$_pf_w")
+    done < <(_preflight_issue_body_checks "$issue_num" "$route")
+  fi
+
+  if [[ ${#warnings[@]} -eq 0 ]]; then
+    JOURNAL_PREFLIGHT_DECISION="GO"
+    JOURNAL_PREFLIGHT_WARNINGS=""
+    log "preflight (issue): GO"
+    return 0
+  fi
+
+  for w in "${warnings[@]}"; do warn "preflight WARN: $w"; done
+
+  local _w="" _wi
+  for _wi in "${warnings[@]}"; do
+    [[ -n "$_w" ]] && _w="${_w}|${_wi}" || _w="$_wi"
+  done
+  JOURNAL_PREFLIGHT_WARNINGS="$_w"
+
+  if [[ "$allow_risky" == "1" || "$allow_risky" == "true" ]]; then
+    JOURNAL_PREFLIGHT_DECISION="GO_WITH_WARNINGS"
+    log "preflight (issue): GO_WITH_WARNINGS (--allow-risky set)"
+    return 0
+  else
+    JOURNAL_PREFLIGHT_DECISION="NO_GO"
+    log "preflight (issue): NO_GO — pass --allow-risky to proceed"
+    return 1
+  fi
+}
+
+# ── Issue routing (overridable via RALPH_HOOKS) ──────────────────────────────
+
+if ! declare -F _route_issue &>/dev/null; then
+_route_issue() {
+  local title="$1"
+  case "$title" in
+    PRD:*|prd:*) echo "prd" ;;
+    *) echo "default" ;;
+  esac
+}
+fi
+
+if ! declare -F _repo_dir &>/dev/null; then
+_repo_dir() {
+  echo "$REPO_ROOT"
+}
+fi
+
+if ! declare -F _repo_name &>/dev/null; then
+_repo_name() {
+  echo "$(basename "$REPO_ROOT")"
+}
+fi
+
+# ── Downstream unlock ────────────────────────────────────────────────────────
+
+_unlock_downstream() {
+  local closed_issues="$1"
+
+  local all_issues
+  all_issues=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --json number,body,labels --limit 500 2>/dev/null || echo "[]")
+
+  local candidates
+  candidates=$(echo "$all_issues" | python3 -c "
+import sys, json, re
+issues = json.load(sys.stdin)
+human_labels = {'ready-for-human', 'needs-triage', 'needs-info', 'wontfix'}
+for issue in issues:
+    num = issue['number']
+    labels = {l['name'] for l in issue.get('labels', [])}
+    if 'ready-for-agent' in labels:
+        continue
+    if human_labels & labels:
+        continue
+    body = issue.get('body') or ''
+    m = re.search(r'## Blocked by\n(.*?)(?:\n## |\Z)', body, re.DOTALL)
+    if not m:
+        continue
+    blockers = re.findall(r'#(\d+)', m.group(1))
+    if blockers:
+        print(f'{num}\t{\",\".join(blockers)}')
+" 2>/dev/null || true)
+
+  [[ -z "$candidates" ]] && return 0
+
+  while IFS=$'\t' read -r num blocker_list; do
+    local all_closed=true
+    IFS=',' read -ra blocker_arr <<< "$blocker_list"
+    for b in "${blocker_arr[@]}"; do
+      local state
+      state=$(gh issue view "$b" --repo "$RALPH_REPO" --json state --jq '.state' 2>/dev/null || echo "OPEN")
+      if [[ "$state" != "CLOSED" ]]; then
+        all_closed=false
+        break
+      fi
+    done
+    if $all_closed; then
+      log "Unlocking downstream issue #$num (all blockers closed)"
+      gh issue edit "$num" --repo "$RALPH_REPO" --add-label ready-for-agent 2>/dev/null || true
+    fi
+  done <<< "$candidates"
+}
+
+# ── Blocker/parent extraction ────────────────────────────────────────────────
+
+_extract_blockers() {
+  echo "$1" | python3 "$LIB" md-refs "Blocked by" 2>/dev/null || true
+}
+
+_extract_parent() {
+  echo "$1" | python3 "$LIB" md-refs "Parent" 2>/dev/null || true
+}
+
+# ── Shared eligibility engine ────────────────────────────────────────────────
+
+_evaluate_issue() {
+  local num="$1" title="$2" body="$3" labels_csv="$4" state="${5:-}"
+
+  if [[ -n "$state" && "$state" != "OPEN" ]]; then
+    echo "closed_issue||issue is not open (state=${state})"
+    return 0
+  fi
+
+  if [[ "$title" == PRD:* || "$title" == prd:* ]]; then
+    echo "prd_issue||detected as PRD/container issue"
+    return 0
+  fi
+
+  local hard_blockers="needs-triage needs-info ready-for-human wontfix"
+  for lbl in $hard_blockers; do
+    if echo ",$labels_csv," | grep -qF ",$lbl,"; then
+      echo "blocked_label:${lbl}||has hard-blocker label '${lbl}'"
+      return 0
+    fi
+  done
+
+  if ! echo ",$labels_csv," | grep -qF ",ready-for-agent,"; then
+    echo "no_ready_label||missing ready-for-agent label"
+    return 0
+  fi
+
+  local route
+  route=$(_route_issue "$title")
+  [[ "$route" == "prd" ]] && { echo "prd_issue||title has PRD: prefix"; return 0; }
+  [[ "$route" == "unknown" ]] && { echo "unknown_route||title has no recognized route prefix"; return 0; }
+
+  if [[ "$route" != "default" ]]; then
+    local repo_dir
+    repo_dir=$(_repo_dir "$route")
+    if [[ ! -d "$repo_dir/.git" ]]; then
+      echo "no_git_dir|${route}|sub-repo directory missing: $repo_dir"
+      return 0
+    fi
+  fi
+
+  if [[ -z "$body" ]]; then
+    body=$(gh issue view "$num" --repo "$RALPH_REPO" --json body --jq '.body' 2>/dev/null || echo "")
+  fi
+
+  local blockers
+  blockers=$(_extract_blockers "$body")
+  if [[ -n "$blockers" ]]; then
+    for blocker_num in $blockers; do
+      local blocker_state
+      blocker_state=$(gh issue view "$blocker_num" --repo "$RALPH_REPO" --json state --jq '.state' 2>/dev/null || echo "OPEN")
+      if [[ "$blocker_state" != "CLOSED" ]]; then
+        echo "blocker_open:${blocker_num}|${route}|blocker issue #${blocker_num} is still open"
+        return 0
+      fi
+    done
+  fi
+
+  echo "eligible|${route}|"
+  return 0
+}
+
+_pick_issue() {
+  local issues_json
+  issues_json=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number,title,labels --limit 100 \
+    --jq 'sort_by(.number) | .[] | "\(.number)\(.title)\(.labels | map(.name) | join(","))"')
+
+  [[ -z "$issues_json" ]] && return 1
+
+  while IFS=$'\x1f' read -r num title labels_csv; do
+    local result status route reason
+    result=$(_evaluate_issue "$num" "$title" "" "$labels_csv")
+    IFS='|' read -r status route reason <<< "$result"
+
+    if [[ "$status" == "eligible" ]]; then
+      echo "${num}|${title}|${route}"
+      return 0
+    else
+      case "$status" in
+        no_ready_label)    warn "Issue #$num missing ready-for-agent label — skipping: $title" ;;
+        blocked_label:*)   warn "Issue #$num has hard-blocker label — skipping: $title" ;;
+        blocker_open:*)    log  "Issue #$num is blocked (${status#blocker_open:}) — skipping" ;;
+        prd_issue)         warn "Issue #$num is a PRD/container — skipping: $title" ;;
+        unknown_route)     warn "Issue #$num has no recognized route prefix — skipping: $title" ;;
+        no_git_dir)        warn "Issue #$num targets $route but git dir missing — skipping" ;;
+      esac
+    fi
+  done <<< "$issues_json"
+
+  return 1
+}
+
+_pick_issue_from_prd() {
+  local prd_num="$1" skip_nums="${2:-}"
+  local issues
+  issues=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number,title,labels,body --limit 100 2>/dev/null || true)
+
+  [[ -z "$issues" || "$issues" == "[]" ]] && { log "No open ready-for-agent issues found for PRD #$prd_num"; return 1; }
+
+  local parsed
+  parsed=$(echo "$issues" | python3 "$LIB" prd-filter "$prd_num" 2>/dev/null || true)
+
+  [[ -z "$parsed" ]] && { log "No open issues found with parent #$prd_num"; return 1; }
+
+  local found_child=false rejection_lines=""
+  while IFS=$'\x1f' read -r -d $'\x1e' num title labels_csv body; do
+    body="${body//$'\x1d'/$'\n'}"
+    [[ " $skip_nums " == *" $num "* ]] && continue
+    found_child=true
+
+    local result status route reason
+    result=$(_evaluate_issue "$num" "$title" "$body" "$labels_csv")
+    IFS='|' read -r status route reason <<< "$result"
+
+    if [[ "$status" == "eligible" ]]; then
+      echo "${num}|${title}|${route}"
+      return 0
+    else
+      rejection_lines="${rejection_lines}  #${num} (${title:0:50}): ${status}${reason:+ — $reason}"$'\n'
+    fi
+  done <<< "$parsed"
+
+  if ! $found_child; then
+    log "No open issues found with parent #$prd_num"
+  else
+    log "Children of PRD #$prd_num — none eligible:"
+    while IFS= read -r rl; do [[ -n "$rl" ]] && log "$rl"; done <<< "$rejection_lines"
+  fi
+  return 1
+}
+
+# ── Branch management ────────────────────────────────────────────────────────
+
+_is_protected() {
+  local branch="$1"
+  for p in $PROTECTED_BRANCHES; do
+    [[ "$branch" == "$p" ]] && return 0
+  done
+  return 1
+}
+
+_ensure_feature_branch() {
+  local repo_dir="$1"
+  local current
+  [[ -n "$FEATURE_BRANCH" ]] && _is_protected "$FEATURE_BRANCH" && die "RALPH_FEATURE_BRANCH cannot be a protected branch ('$FEATURE_BRANCH')"
+  current=$(git -C "$repo_dir" branch --show-current)
+
+  if _is_protected "$current"; then
+    if [[ -z "$FEATURE_BRANCH" ]]; then
+      die "$(basename "$repo_dir") is on protected branch '$current' and RALPH_FEATURE_BRANCH is not set."
+    fi
+    log "$(basename "$repo_dir") is on protected branch '$current'" >&2
+    if git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$FEATURE_BRANCH" 2>/dev/null; then
+      log "Feature branch '$FEATURE_BRANCH' exists — switching" >&2
+      git -C "$repo_dir" checkout "$FEATURE_BRANCH" >&2
+    else
+      local base_branch="${RALPH_BASE_BRANCH:-$current}"
+      log "Creating '$FEATURE_BRANCH' from '${base_branch}'" >&2
+      git -C "$repo_dir" checkout "$base_branch" 2>/dev/null >&2 || die "Cannot checkout $base_branch in $(basename "$repo_dir")"
+      git -C "$repo_dir" pull --ff-only origin "$base_branch" 2>/dev/null >&2 || true
+      git -C "$repo_dir" checkout -b "$FEATURE_BRANCH" >&2
+    fi
+    current="$FEATURE_BRANCH"
+  fi
+  echo "$current"
+}
+
+# ── Codex review gate ────────────────────────────────────────────────────────
+
+_codex_gate_inconclusive() {
+  local range_label="$1" repo_name="$2" closed_issues="$3" reason="$4"
+  _CODEX_REVIEW_VERDICT="inconclusive"
+  if [[ "${RALPH_GATE_STRICT:-0}" == "1" ]]; then
+    warn "${reason} RALPH_GATE_STRICT=1 — failing closed."
+    [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "blocked" \
+      "verdict=inconclusive" 2>/dev/null || true
+    local header="## Codex Review — INCONCLUSIVE (strict gate)
+
+Reviewer: codex (${ACCOUNT}) | Range: \`${range_label}\` | Repo: ${repo_name}
+
+${reason} \`RALPH_GATE_STRICT=1\` is set — failing closed."
+    for n in $closed_issues; do
+      gh issue reopen "$n" --repo "$RALPH_REPO" || true
+      gh issue edit "$n" --repo "$RALPH_REPO" --add-label ready-for-agent || true
+      gh issue comment "$n" --repo "$RALPH_REPO" --body "$header" || true
+    done
+    log "Reopened: $closed_issues — will retry next iteration."
+    return 1
+  fi
+  warn "${reason} Proceeding (set RALPH_GATE_STRICT=1 to fail closed)."
+  [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "done" "verdict=inconclusive" 2>/dev/null || true
+  return 0
+}
+
+_run_codex_review() {
+  local repo_dir="$1" sha="$2" closed_issues="$3" before_sha="${4:-}"
+  _CODEX_REVIEW_VERDICT=""
+
+  if [[ "${RALPH_SKIP_CODEX:-0}" == "1" ]]; then
+    log "RALPH_SKIP_CODEX=1 — skipping Codex review gate"
+    _CODEX_REVIEW_VERDICT="skipped"
+    return 0
+  fi
+
+  local commit_title repo_name
+  commit_title=$(git -C "$repo_dir" log -1 --format="%s" "$sha" 2>/dev/null || echo "unknown")
+  repo_name=$(basename "$repo_dir")
+
+  mkdir -p "$RALPH_DIR/reviews"
+  local ts result_file
+  ts=$(date +%Y%m%dT%H%M%S)
+  result_file="$RALPH_DIR/reviews/review-${ts}-${sha:0:8}.json"
+  _CODEX_REVIEW_FILE="$result_file"
+
+  local diff_stat diff_body range_label
+  local diff_lines="${RALPH_DIFF_LINES:-800}"
+
+  if [[ -n "$before_sha" && "$before_sha" != "$sha" ]]; then
+    if ! git -C "$repo_dir" rev-parse --verify "${before_sha}^{commit}" &>/dev/null; then
+      log "review FAIL: base revision $before_sha not found — reopening"
+      for n in $closed_issues; do
+        gh issue reopen "$n" --repo "$RALPH_REPO" || true
+        gh issue edit "$n" --repo "$RALPH_REPO" --add-label ready-for-agent || true
+      done
+      return 1
+    fi
+    local commit_count
+    commit_count=$(git -C "$repo_dir" rev-list --count "${before_sha}..${sha}" 2>/dev/null || echo "?")
+    range_label="${before_sha:0:12}..${sha:0:12} (${commit_count} commit(s))"
+    diff_stat=$({ git -C "$repo_dir" diff --stat "${before_sha}..${sha}" 2>/dev/null || true; } | head -40)
+    diff_body=$({ git -C "$repo_dir" diff "${before_sha}..${sha}" 2>/dev/null || true; } | head -"$diff_lines")
+  else
+    range_label="${sha:0:12}"
+    diff_stat=$({ git -C "$repo_dir" show --stat "$sha" 2>/dev/null || true; } | head -40)
+    diff_body=$({ git -C "$repo_dir" show "$sha" 2>/dev/null || true; } | head -"$diff_lines")
+  fi
+
+  log "Running blocking Codex review on ${range_label} — \"${commit_title}\"..."
+
+  set +e
+  CODEX_HOME="$CODEX_HOME" codex exec \
+    -m "$CODEX_MODEL" --output-schema "$SCHEMA" -o "$result_file" \
+    -c model_reasoning_effort=xhigh \
+    "You are reviewing work produced by an AI coding agent (Claude Code).
+
+Range: ${range_label}
+Tip commit title: ${commit_title}
+Repo: ${repo_name}
+
+--- DIFF STAT ---
+${diff_stat}
+
+--- DIFF ---
+${diff_body}
+
+Review focus:
+1. Correctness — logic bugs, off-by-ones, wrong error handling, security issues
+2. AGENTS.md invariants — if AGENTS.md exists at the repo root, flag any rule violations by rule ID
+3. Tests — are tests added/updated? Do they exercise the new behaviour?
+4. Convention — does new code follow existing patterns in the codebase?
+${RALPH_CODEX_REVIEW_EXTRA:+$RALPH_CODEX_REVIEW_EXTRA}
+
+Classify each finding as blocker / concern / nit.
+Categorize each as: correctness, security, tenant_isolation, test_coverage, convention, or performance.
+Set verdict to 'clean' only if there are no blockers and no concerns." \
+    2>&1 | sed 's/^/[codex-gate] /'
+  local codex_exit=$?
+  set -e
+
+  if [[ $codex_exit -ne 0 || ! -s "$result_file" ]]; then
+    _codex_gate_inconclusive "$range_label" "$repo_name" "$closed_issues" \
+      "Codex exited with code ${codex_exit} or produced no output — gate inconclusive."
+    return $?
+  fi
+
+  local parsed verdict blockers concerns nits
+  parsed=$(python3 "$LIB" codex-parse "$result_file" counts 2>/dev/null || printf 'unknown\t0\t0\t0')
+  verdict=$(echo "$parsed"  | cut -f1)
+  blockers=$(echo "$parsed" | cut -f2)
+  concerns=$(echo "$parsed" | cut -f3)
+  nits=$(echo "$parsed"     | cut -f4)
+
+  if [[ "$verdict" == "unknown" ]]; then
+    _codex_gate_inconclusive "$range_label" "$repo_name" "$closed_issues" \
+      "Codex output could not be parsed or did not match the review schema — gate inconclusive."
+    return $?
+  fi
+
+  log "────────────────────────────────────────────"
+  log "Verdict: ${verdict} | blockers=${blockers} concerns=${concerns} nits=${nits}"
+  log "Review: ${result_file}"
+  log "────────────────────────────────────────────"
+
+  local findings_md
+  findings_md=$(python3 "$LIB" codex-parse "$result_file" findings 2>/dev/null \
+    || echo "*(could not render findings)*")
+
+  if [[ "$blockers" -gt 0 ]]; then
+    [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "blocked" \
+      "verdict=$verdict" "blockers=$blockers" "concerns=$concerns" "nits=$nits" 2>/dev/null || true
+
+    log "GATE FAILED: ${blockers} blocker(s). Reopening issues for rework."
+    local header="## Codex Review — BLOCKED
+
+Reviewer: codex (${ACCOUNT}) | Range: \`${range_label}\` | Repo: ${repo_name}
+
+$findings_md"
+
+    for n in $closed_issues; do
+      gh issue reopen "$n" --repo "$RALPH_REPO" || true
+      gh issue edit "$n" --repo "$RALPH_REPO" --add-label ready-for-agent || true
+      gh issue comment "$n" --repo "$RALPH_REPO" --body "$header" || true
+    done
+
+    log "Reopened: $closed_issues — will retry next iteration."
+    _CODEX_REVIEW_VERDICT="blocked"
+    return 1
+  fi
+
+  if [[ $(( concerns + nits )) -gt 0 ]]; then
+    local severity_note="concerns=${concerns}, nits=${nits}"
+    local header="## Codex Review — Passed (${severity_note})
+
+Reviewer: codex (${ACCOUNT}) | Range: \`${range_label}\` | Repo: ${repo_name}
+
+$findings_md"
+
+    for n in $closed_issues; do
+      gh issue comment "$n" --repo "$RALPH_REPO" --body "$header" || true
+    done
+  fi
+
+  [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "done" \
+    "verdict=${verdict:-clean}" "blockers=${blockers:-0}" "concerns=${concerns:-0}" "nits=${nits:-0}" 2>/dev/null || true
+
+  _CODEX_REVIEW_VERDICT="$verdict"
+  return 0
+}
+
+# ── Stream formatter ─────────────────────────────────────────────────────────
+
+_write_formatter() {
+  cat > "$1" <<'PYEOF'
+import sys, json, datetime
+
+RESET  = "\033[0m";  BOLD   = "\033[1m";  DIM    = "\033[2m"
+CYAN   = "\033[36m"; YELLOW = "\033[33m"; GREEN  = "\033[32m"
+RED    = "\033[31m"; BLUE   = "\033[34m"
+
+def ts():
+    return f"{DIM}{datetime.datetime.now().strftime('%H:%M:%S')}{RESET}"
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    try:
+        ev = json.loads(raw)
+    except json.JSONDecodeError:
+        print(raw, flush=True)
+        continue
+
+    t = ev.get("type", "")
+
+    if t == "assistant":
+        for block in ev.get("message", {}).get("content", []):
+            if block.get("type") == "text":
+                text = block["text"].strip()
+                if text:
+                    lines = text.splitlines()
+                    print(f"{ts()} {CYAN}{BOLD}[claude]{RESET} {lines[0]}", flush=True)
+                    for line in lines[1:]:
+                        print(f"         {line}", flush=True)
+            elif block.get("type") == "tool_use":
+                name  = block.get("name", "?")
+                inp   = block.get("input", {})
+                label = inp.get("command") or inp.get("file_path") or inp.get("path") or ""
+                if len(label) > 80:
+                    label = label[:77] + "…"
+                print(f"{ts()} {YELLOW}{BOLD}[tool  ]{RESET} {BOLD}{name}{RESET}  {DIM}{label}{RESET}", flush=True)
+
+    elif t == "tool_result":
+        for block in ev.get("content", []):
+            if block.get("type") == "text":
+                txt = block["text"].strip()
+                low = txt.lower()
+                if "error" in low or "traceback" in low or "failed" in low:
+                    for line in txt.splitlines()[:8]:
+                        print(f"{ts()} {RED}{BOLD}[error ]{RESET} {line}", flush=True)
+
+    elif t == "result":
+        subtype  = ev.get("subtype", "")
+        cost     = ev.get("cost_usd")
+        turns    = ev.get("num_turns", "?")
+        cost_str = f"  ${cost:.4f}" if isinstance(cost, (int, float)) else ""
+        if subtype == "error_during_execution":
+            print(f"{ts()} {RED}{BOLD}[result]{RESET} ERROR: {ev.get('error','unknown')}", flush=True)
+        else:
+            print(f"{ts()} {GREEN}{BOLD}[result]{RESET} {subtype}  turns={turns}{cost_str}", flush=True)
+
+    elif t == "system" and ev.get("subtype") == "init":
+        sid = ev.get("session_id", "?")[:8]
+        print(f"{ts()} {BLUE}{BOLD}[init  ]{RESET} session={sid}…", flush=True)
+PYEOF
+}
+
+# ── Run journal ──────────────────────────────────────────────────────────────
+
+J_RUN_ID=""
+J_START_TS=0
+
+_journal_finalize() {
+  [[ -z "${J_RUN_ID:-}" ]] && return 0
+  local _elapsed=$(( $(date +%s) - ${J_START_TS:-$(date +%s)} ))
+  python3 "$LIB" journal-write \
+    "$RUN_DIR" "$J_RUN_ID" \
+    "${J_COMMAND:-once}" "${J_ISSUE:-}" "${J_PRD:-}" "${J_ALLOW_RISKY:-0}" \
+    "${J_ROUTE:-}" "${J_BRANCH:-}" "${J_BEFORE_HEAD:-}" "${J_AFTER_HEAD:-${J_BEFORE_HEAD:-}}" \
+    "${JOURNAL_PREFLIGHT_DECISION:-NOT_RUN}" "${JOURNAL_PREFLIGHT_WARNINGS:-}" \
+    "${J_LOG_PATH:-}" "${J_REVIEW_RESULT:-}" "${J_REVIEW_FILE:-}" \
+    "${J_FINAL_STATUS:-cancelled}" "$_elapsed" "${J_USAGE_EXHAUSTED:-0}" \
+    --resume-hints "${J_RESUME_HINTS:-null}" --resumed-from "${J_RESUMED_FROM:-}" \
+    2>/dev/null || true
+  log "Journal written: $RUN_DIR/run-${J_RUN_ID}.md"
+}
+
+# ── Retention sweep ──────────────────────────────────────────────────────────
+
+_prune_stale() {
+  local prune_output
+  prune_output=$(python3 "$LIB" prune-stale "$RUN_DIR" "$SCHED_DIR" "${RALPH_RETENTION_DAYS:-30}" 2>/dev/null || true)
+
+  # Handle schedule cancellations
+  while IFS=$'\t' read -r tag job_id backend backend_id; do
+    if [[ "$tag" == "PRUNE_SCHED" && "$backend" != "none" ]]; then
+      _sched_cancel "$job_id" "$backend" "$backend_id" 2>/dev/null || true
+    fi
+  done <<< "$prune_output"
+
+  local pruned_line
+  pruned_line=$(echo "$prune_output" | grep '^PRUNED' || true)
+  if [[ -n "$pruned_line" ]]; then
+    local _pr _ps
+    IFS=$'\t' read -r _ _pr _ps <<< "$pruned_line"
+    if (( _pr + _ps > 0 )); then
+      log "Pruned: $_pr run journal(s), $_ps schedule(s) older than ${RALPH_RETENTION_DAYS:-30}d"
+    fi
+  fi
+}
+
+# ── Resume helpers ───────────────────────────────────────────────────────────
+
+_resume_prechecks() {
+  local run_id="$1"
+  local run_json="$RUN_DIR/run-${run_id}.json"
+
+  [[ ! -f "$run_json" ]] && { log "resume FAIL: journal not found: $run_json"; return 1; }
+
+  local final_status
+  final_status=$(python3 "$LIB" json-get "$run_json" final_status 2>/dev/null || echo "")
+  case "$final_status" in
+    usage_exhausted|agent_failed|standby) ;;
+    *) log "resume FAIL: final_status is '${final_status:-<empty>}' — not resumable"; return 1 ;;
+  esac
+
+  local r_issue r_branch r_expected_head r_route r_repo_dir
+  IFS=$'\t' read -r r_issue r_branch r_expected_head < \
+    <(python3 "$LIB" json-get "$run_json" resume_hints.issue resume_hints.branch resume_hints.expected_head 2>/dev/null)
+  r_route=$(python3 "$LIB" json-get "$run_json" route 2>/dev/null || echo "default")
+  [[ -z "$r_route" ]] && r_route="default"
+  r_repo_dir=$(_repo_dir "$r_route")
+
+  [[ -z "$r_branch" ]] && { log "resume FAIL: resume_hints.branch is empty"; return 1; }
+  [[ -z "$r_repo_dir" || ! -d "$r_repo_dir/.git" ]] && { log "resume FAIL: repo not found for route '${r_route}'"; return 1; }
+
+  if ! git -C "$r_repo_dir" show-ref --verify --quiet "refs/heads/${r_branch}" 2>/dev/null; then
+    log "resume FAIL: branch '${r_branch}' does not exist in $(basename "$r_repo_dir")"
+    return 1
+  fi
+
+  local current_head=""
+  if [[ -n "$r_expected_head" ]]; then
+    current_head=$(git -C "$r_repo_dir" rev-parse "refs/heads/${r_branch}" 2>/dev/null || echo "")
+    if [[ "$current_head" != "$r_expected_head" ]]; then
+      log "resume FAIL: HEAD of '${r_branch}' is ${current_head:0:12} but expected ${r_expected_head:0:12}"
+      return 1
+    fi
+  fi
+
+  local dirty
+  dirty=$(git -C "$r_repo_dir" status --porcelain 2>/dev/null || echo "ERR")
+  if [[ -n "$dirty" ]]; then
+    if [[ -n "$r_expected_head" && "$current_head" == "$r_expected_head" ]]; then
+      log "resume: worktree has uncommitted changes from interrupted run — continuing"
+    else
+      log "resume FAIL: worktree is dirty and HEAD doesn't match expected — commit or stash first"
+      return 1
+    fi
+  fi
+
+  if [[ -n "$r_issue" ]]; then
+    local i_data
+    i_data=$(gh issue view "$r_issue" --repo "$RALPH_REPO" \
+      --json number,title,body,labels,state 2>/dev/null) || { log "resume FAIL: could not fetch issue #${r_issue}"; return 1; }
+    local i_title i_body i_labels i_state _if_out
+    _if_out=$(echo "$i_data" | python3 "$LIB" issue-fields 2>/dev/null || printf '\t\t')
+    IFS=$'\t' read -r i_title i_labels i_state <<< "$(head -1 <<< "$_if_out")"
+    i_body=$(tail -n +2 <<< "$_if_out")
+    local i_result i_status i_reason
+    i_result=$(_evaluate_issue "$r_issue" "$i_title" "$i_body" "$i_labels" "$i_state")
+    IFS='|' read -r i_status _ i_reason <<< "$i_result"
+    if [[ "$i_status" != "eligible" ]]; then
+      log "resume FAIL: issue #${r_issue} is no longer eligible — ${i_status}${i_reason:+: $i_reason}"
+      return 1
+    fi
+  fi
+
+  local r_allow_risky
+  r_allow_risky=$(python3 "$LIB" json-get "$run_json" target_flags.allow_risky 2>/dev/null || echo "0")
+
+  RESUME_ISSUE="$r_issue"
+  RESUME_BRANCH="$r_branch"
+  RESUME_ROUTE="$r_route"
+  RESUME_REPO_DIR="$r_repo_dir"
+  RESUME_ALLOW_RISKY="$r_allow_risky"
+
+  log "resume  : pre-checks passed (issue #${r_issue}, branch ${r_branch})"
+  return 0
+}
+
+# ── Usage / help ─────────────────────────────────────────────────────────────
+
+_usage() {
+  cat <<'EOF'
+ralph — AFK agent runner
+
+USAGE
+  ralph <subcommand> [flags]
+
+SUBCOMMANDS
+  init              workspace setup (branches, labels, dirs)
+  once [flags]      run one agent iteration
+  loop [flags]      loop until no ready issues (default max 10)
+  resume RUN_ID     retry a previous interrupted run
+  review            manual post-commit Codex review
+  schedule          manage scheduled runs (list / show / logs / cancel)
+  ping [flags]      minimal Claude session (keeps usage counter alive)
+  schedule-pings    schedule pings for a full day (default 04:00–22:00)
+  clean-pings       cancel all pending ping schedules (or for a specific date)
+  check             verify auth, routing, and config
+
+ENV
+  RALPH_REPO=org/repo              GitHub owner/repo (auto-detected from git remote)
+  RALPH_HOOKS=/path/to/hooks.sh    shell file with routing overrides
+  RALPH_PROTECTED_BRANCHES="main"  space-separated (default: main)
+  RALPH_BASE_BRANCH=main           branch to create feature branches from (default: current)
+  RALPH_FEATURE_BRANCH=feature/x   target feature branch
+  RALPH_SKIP_CODEX=1               skip Codex review gate
+  RALPH_MODEL=claude-sonnet-4-6    override Claude model (default: claude-opus-4-6)
+  RALPH_EFFORT=high                override Claude effort (default: medium)
+  RALPH_CODEX_MODEL=o3             override Codex review model (default: gpt-5.5)
+  RALPH_CODEX_REVIEW_EXTRA="..."   additional review focus lines
+  RALPH_DIFF_LINES=800             max diff lines sent to Codex review (default 800)
+  RALPH_RETENTION_DAYS=30          prune journals/schedules older than N days (default 30)
+  RALPH_GATE_STRICT=1              fail-closed on inconclusive Codex reviews
+  RALPH_VERBOSE=1                  shell trace
+EOF
+}
+
+_usage_once() {
+  cat <<'EOF'
+ralph once — run one agent iteration
+
+FLAGS
+  --issue N                  target a specific issue by number
+  --prd N                    filter queue to PRD #N children
+  --allow-risky              allow risky issues
+  --schedule "YYYY-MM-DD HH:MM"  defer execution
+EOF
+}
+
+_usage_loop() {
+  cat <<'EOF'
+ralph loop — loop until no ready-for-agent issues remain
+
+FLAGS
+  --max N                    maximum iterations (default: 10; 5 when --prd)
+  --prd N                    filter queue to PRD #N children
+  --allow-risky              allow risky issues
+  --schedule "YYYY-MM-DD HH:MM"  defer loop start
+EOF
+}
+
+_usage_resume() {
+  cat <<'EOF'
+ralph resume — retry a previous interrupted or exhausted run
+
+USAGE
+  ralph resume RUN_ID [--schedule "YYYY-MM-DD HH:MM"]
+  ralph resume list
+EOF
+}
+
+# ── Subcommand dispatch ──────────────────────────────────────────────────────
+CMD="${1:-}"
+shift || true
+
+if [[ -z "$CMD" || "$CMD" == "--help" || "$CMD" == "-h" || "$CMD" == "help" ]]; then
+  _usage
+  exit 0
+fi
+
+case "$CMD" in
+
+# ─────────────────────────────────────────────────────────────────────────────
+once)
+  ONCE_ISSUE="" ONCE_PRD="" ONCE_ALLOW_RISKY=0 ONCE_SCHEDULE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h) _usage_once; exit 0 ;;
+      --issue)   [[ $# -lt 2 || -z "${2:-}" ]] && { echo "error: --issue requires N" >&2; exit 1; }; ONCE_ISSUE="$2"; shift 2 ;;
+      --prd)     [[ $# -lt 2 || -z "${2:-}" ]] && { echo "error: --prd requires N" >&2; exit 1; }; ONCE_PRD="$2"; shift 2 ;;
+      --allow-risky) ONCE_ALLOW_RISKY=1; shift ;;
+      --schedule) [[ $# -lt 2 || -z "${2:-}" ]] && { echo "error: --schedule requires datetime" >&2; exit 1; }; ONCE_SCHEDULE="$2"; shift 2 ;;
+      -*) echo "error: unknown flag: $1" >&2; _usage_once; exit 1 ;;
+      *)  echo "error: unexpected argument: $1" >&2; _usage_once; exit 1 ;;
+    esac
+  done
+
+  log "account : $ACCOUNT"
+  log "model   : $MODEL"
+  log "repo    : $REPO_ROOT → $RALPH_REPO"
+
+  # ── Scheduled run (no specific issue): defer to fire time ────────────────
+  if [[ -n "$ONCE_SCHEDULE" && -z "$ONCE_ISSUE" ]]; then
+    log "schedule: $ONCE_SCHEDULE — running global creation-time preflight"
+    _sched_parsed=$(python3 "$LIB" parse-dt "$ONCE_SCHEDULE" 2>&1) || die "$_sched_parsed"
+    _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
+    _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
+
+    RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE=1 RALPH_PREFLIGHT_SCHEDULE_EPOCH="$_sched_epoch"
+    if ! _preflight "" "" "$ONCE_ALLOW_RISKY"; then
+      unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+      exit 1
+    fi
+    unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+
+    _sched_stored_cmd="once${ONCE_PRD:+ --prd $ONCE_PRD}"
+    [[ "$ONCE_ALLOW_RISKY" == "1" ]] && _sched_stored_cmd+=" --allow-risky"
+    _sched_flags_json=$(python3 "$LIB" json-build "prd=${ONCE_PRD:-null}" "allow_risky=$([[ "$ONCE_ALLOW_RISKY" == "1" ]] && echo true || echo false)")
+    if ! _schedule_create "$_sched_stored_cmd" "$_sched_flags_json" "$ONCE_ALLOW_RISKY" \
+      "$_sched_iso" "$_sched_epoch" "$JOURNAL_PREFLIGHT_DECISION" "${JOURNAL_PREFLIGHT_WARNINGS:-}"; then
+      die "schedule: failed to register OS job for $_job_id"
+    fi
+
+    log "────────────────────────────────────────────"
+    log "Scheduled  : $_job_id"
+    log "  Command  : $_sched_stored_cmd"
+    log "  Run at   : $ONCE_SCHEDULE"
+    log "  Backend  : ${_SCHED_BACKEND}"
+    log "  Inspect  : ralph schedule show $_job_id"
+    log "────────────────────────────────────────────"
+    exit 0
+  fi
+
+  # Issue selection
+  if [[ -n "$ONCE_ISSUE" ]]; then
+    issue_data=$(gh issue view "$ONCE_ISSUE" --repo "$RALPH_REPO" \
+      --json number,title,body,labels,state 2>/dev/null) || die "Issue #$ONCE_ISSUE not found"
+    _if_out=$(echo "$issue_data" | python3 "$LIB" issue-fields 2>/dev/null || printf '\t\t')
+    IFS=$'\t' read -r _i_title _i_labels _i_state <<< "$(head -1 <<< "$_if_out")"
+    _i_body=$(tail -n +2 <<< "$_if_out")
+    _i_result=$(_evaluate_issue "$ONCE_ISSUE" "$_i_title" "$_i_body" "$_i_labels" "$_i_state")
+    IFS='|' read -r _i_status _i_route _i_reason <<< "$_i_result"
+    [[ "$_i_status" == "prd_issue" ]] && { log "SKIP: #$ONCE_ISSUE is a PRD issue"; exit 1; }
+    [[ "$_i_status" != "eligible" ]] && { log "SKIP: #$ONCE_ISSUE not eligible — ${_i_status}${_i_reason:+: $_i_reason}"; exit 1; }
+    picked="${ONCE_ISSUE}|${_i_title}|${_i_route}"
+  elif [[ -n "$ONCE_PRD" ]]; then
+    picked=$(_pick_issue_from_prd "$ONCE_PRD") || { log "No eligible children of PRD #$ONCE_PRD."; exit 0; }
+  else
+    picked=$(_pick_issue) || { log "No unblocked ready-for-agent issues."; [[ -n "${RALPH_ITER:-}" ]] && exit 3 || exit 0; }
+  fi
+
+  IFS='|' read -r ISSUE_NUM ISSUE_TITLE ISSUE_ROUTE <<< "$picked"
+  WORK_DIR=$(_repo_dir "$ISSUE_ROUTE")
+  WORK_REPO=$(_repo_name "$ISSUE_ROUTE")
+
+  # ── Scheduled run (--issue path) ────────────────────────────────────────
+  if [[ -n "$ONCE_SCHEDULE" && -n "$ONCE_ISSUE" ]]; then
+    log "schedule: $ONCE_SCHEDULE — running creation-time preflight"
+    _sched_parsed=$(python3 "$LIB" parse-dt "$ONCE_SCHEDULE" 2>&1) || die "$_sched_parsed"
+    _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
+    _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
+
+    RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE=1 RALPH_PREFLIGHT_SCHEDULE_EPOCH="$_sched_epoch"
+    if ! _preflight "$ISSUE_NUM" "$ISSUE_ROUTE" "$ONCE_ALLOW_RISKY"; then
+      unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+      exit 1
+    fi
+    unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+
+    _sched_stored_cmd="once${ONCE_ISSUE:+ --issue $ONCE_ISSUE}${ONCE_PRD:+ --prd $ONCE_PRD}"
+    [[ "$ONCE_ALLOW_RISKY" == "1" ]] && _sched_stored_cmd+=" --allow-risky"
+    _sched_flags_json=$(python3 "$LIB" json-build \
+      "issue=${ONCE_ISSUE:-null}" "prd=${ONCE_PRD:-null}" "route=${ISSUE_ROUTE:-null}" \
+      "allow_risky=$([[ "$ONCE_ALLOW_RISKY" == "1" ]] && echo true || echo false)")
+    if ! _schedule_create "$_sched_stored_cmd" "$_sched_flags_json" "$ONCE_ALLOW_RISKY" \
+      "$_sched_iso" "$_sched_epoch" "$JOURNAL_PREFLIGHT_DECISION" "${JOURNAL_PREFLIGHT_WARNINGS:-}"; then
+      die "schedule: failed to register OS job for $_job_id"
+    fi
+
+    log "────────────────────────────────────────────"
+    log "Scheduled  : $_job_id"
+    log "  Command  : $_sched_stored_cmd"
+    log "  Run at   : $ONCE_SCHEDULE"
+    log "  Backend  : ${_SCHED_BACKEND}"
+    log "────────────────────────────────────────────"
+    exit 0
+  fi
+
+  log "picked  : #$ISSUE_NUM ($ISSUE_ROUTE) — $ISSUE_TITLE"
+  log "workdir : $WORK_DIR"
+
+  # ── Journal init ──────────────────────────────────────────────────────────
+  mkdir -p "$RUN_DIR"
+  J_RUN_ID="$(date +%Y%m%dT%H%M%S)-$(python3 "$LIB" gen-id)"
+  J_START_TS=$(date +%s)
+  J_COMMAND="once${ONCE_ISSUE:+ --issue $ONCE_ISSUE}${ONCE_PRD:+ --prd $ONCE_PRD}"
+  J_ISSUE="$ISSUE_NUM" J_PRD="${ONCE_PRD:-}" J_ALLOW_RISKY="$ONCE_ALLOW_RISKY"
+  J_ROUTE="$ISSUE_ROUTE" J_BRANCH="" J_BEFORE_HEAD="" J_AFTER_HEAD=""
+  J_LOG_PATH="" J_REVIEW_RESULT="" J_REVIEW_FILE=""
+  J_FINAL_STATUS="cancelled" J_USAGE_EXHAUSTED=0
+  J_RESUME_HINTS="" J_RESUMED_FROM="${RALPH_RESUME_FROM:-}" J_FMT_PY=""
+  JOURNAL_PREFLIGHT_DECISION="NOT_RUN"
+
+  _once_cleanup() {
+    _journal_finalize
+    [[ -z "${RALPH_ITER:-}" ]] && _lock_release
+    rm -f "${J_FMT_PY:-}"
+  }
+  trap '_once_cleanup' EXIT
+  trap '
+    if [[ -n "${J_ISSUE:-}" && -n "${before_head:-}" ]]; then
+      J_FINAL_STATUS="agent_failed"
+      J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$J_ISSUE" "$(git -C "$WORK_DIR" branch --show-current 2>/dev/null || echo "${current_branch:-}")" "$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || echo "${before_head:-}")" 2>/dev/null || echo "null")
+    fi
+    _once_cleanup; exit 130
+  ' INT
+  trap '
+    if [[ -n "${J_ISSUE:-}" && -n "${before_head:-}" ]]; then
+      J_FINAL_STATUS="agent_failed"
+      J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$J_ISSUE" "$(git -C "$WORK_DIR" branch --show-current 2>/dev/null || echo "${current_branch:-}")" "$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || echo "${before_head:-}")" 2>/dev/null || echo "null")
+    fi
+    _once_cleanup; exit 143
+  ' TERM
+
+  # ── Preflight + lock ──────────────────────────────────────────────────────
+  if [[ -z "${RALPH_ITER:-}" ]]; then
+    if ! _preflight "$ISSUE_NUM" "$ISSUE_ROUTE" "$ONCE_ALLOW_RISKY"; then
+      J_FINAL_STATUS="preflight_nogo"; exit 2
+    fi
+    _lock_acquire "once${ONCE_ISSUE:+ --issue $ONCE_ISSUE}${ONCE_PRD:+ --prd $ONCE_PRD}"
+  else
+    if ! _preflight_issue_soft "$ISSUE_NUM" "$ISSUE_ROUTE" "$ONCE_ALLOW_RISKY"; then
+      J_FINAL_STATUS="preflight_nogo"; exit 2
+    fi
+  fi
+
+  current_branch=$(_ensure_feature_branch "$WORK_DIR")
+  log "branch  : $current_branch"
+  J_BRANCH="$current_branch"
+
+  before_head=$(git -C "$WORK_DIR" rev-parse HEAD)
+  log "head    : $before_head"
+  J_BEFORE_HEAD="$before_head"
+  echo "$before_head" > /tmp/.ralph_pre_session_head
+
+  # Fetch issue details
+  issue_json=$(gh issue view "$ISSUE_NUM" --repo "$RALPH_REPO" --json body,comments)
+  issue_body=$(echo "$issue_json" | python3 "$LIB" json-stdin body 2>/dev/null || echo "")
+  issue_comments=$(echo "$issue_json" | python3 "$LIB" format-comments 2>/dev/null || echo "No prior comments.")
+
+  other_issues=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number,title \
+    --jq '[.[] | select(.number != '"$ISSUE_NUM"') | "- #\(.number): \(.title)"] | join("\n")')
+
+  commits=$(git -C "$WORK_DIR" log -n 10 --format="%h %ad %s" --date=short)
+
+  # Build prompt
+  GLOBAL_PROMPT="$HOME/.ralph/prompt.md"
+  WORKSPACE_PROMPT="$RALPH_DIR/prompt.md"
+  if [[ -f "$GLOBAL_PROMPT" ]]; then
+    prompt=$(cat "$GLOBAL_PROMPT")
+    [[ -f "$WORKSPACE_PROMPT" ]] && prompt="$prompt
+
+---
+
+$(cat "$WORKSPACE_PROMPT")"
+  elif [[ -f "$WORKSPACE_PROMPT" ]]; then
+    prompt=$(cat "$WORKSPACE_PROMPT")
+  else
+    die "no prompt.md found"
+  fi
+
+  # Log setup
+  mkdir -p "$RALPH_DIR/logs"
+  ts=$(date +%Y%m%dT%H%M%S)
+  raw_log="$RALPH_DIR/logs/session-${ts}-issue${ISSUE_NUM}.jsonl"
+  J_LOG_PATH="$raw_log"
+
+  log "Starting claude ($MODEL) in $WORK_REPO — raw log: $raw_log"
+
+  if [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]]; then
+    _state_update_iter "$RALPH_ITER" "implementing" \
+      "issue_number=$ISSUE_NUM" "issue_title=${ISSUE_TITLE:0:28}" 2>/dev/null || true
+  fi
+
+  before_open=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number --limit 100 --jq '.[].number' | sort -u)
+
+  _claude_stream() {
+    cd "$WORK_DIR"
+    claude \
+      --model "$MODEL" --effort "$EFFORT" \
+      --permission-mode bypassPermissions --print \
+      --output-format stream-json --verbose --no-session-persistence \
+      "IMPORTANT: You are running AFK — no human is present. You MUST commit and \
+close the issue yourself. Do not ask \"should I commit?\", \"want me to commit?\", \
+or \"ready to commit when you say the word\". Stage files and run git commit \
+directly. Waiting for confirmation will hang this session with no one to answer.
+
+You are implementing issue #${ISSUE_NUM}: ${ISSUE_TITLE}
+Target repo: ${WORK_REPO}
+
+## Issue #${ISSUE_NUM}
+
+${issue_body}
+
+## Review comments
+
+${issue_comments}
+
+## Other open issues (for awareness — do NOT implement these)
+
+${other_issues:-None.}
+
+## Recent commits in ${WORK_REPO}
+
+${commits}
+
+${prompt}"
+  }
+
+  J_FMT_PY=$(mktemp /tmp/ralph-fmt-XXXXXX)
+  _write_formatter "$J_FMT_PY"
+  _fmt_stream() { python3 -u "$J_FMT_PY"; }
+
+  _claude_exit=0
+  _caller_skip_codex="${RALPH_SKIP_CODEX:-0}"
+  export RALPH_SKIP_CODEX=1
+  _claude_stream | tee "$raw_log" | _fmt_stream || {
+    _pipe_exits=("${PIPESTATUS[@]}")
+    _claude_exit=${_pipe_exits[0]:-0}
+    [[ ${_pipe_exits[1]:-0} -ne 0 ]] && warn "tee exited ${_pipe_exits[1]} — raw log may be incomplete"
+    [[ ${_pipe_exits[2]:-0} -ne 0 && ${_pipe_exits[2]:-0} -ne 141 ]] && log "WARNING: formatter exited ${_pipe_exits[2]}"
+    [[ $_claude_exit -eq 141 ]] && { warn "claude exited 141 (SIGPIPE) — treating as succeeded"; _claude_exit=0; }
+    export RALPH_SKIP_CODEX="$_caller_skip_codex"
+  }
+  export RALPH_SKIP_CODEX="$_caller_skip_codex"
+
+  elapsed=$(( $(date +%s) - ${J_START_TS:-$(date +%s)} ))
+  log "Agent finished in ${elapsed}s (exit ${_claude_exit}) — log: $raw_log"
+
+  if ! after_head=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null); then
+    warn "git rev-parse HEAD failed — aborting"
+    J_FINAL_STATUS="agent_failed"
+    J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$ISSUE_NUM" "$current_branch" "$before_head" 2>/dev/null || echo "null")
+    exit 1
+  fi
+  J_AFTER_HEAD="$after_head"
+
+  # Usage exhaustion detection
+  if [[ -f "$raw_log" ]]; then
+    _exhaust=$(python3 "$LIB" journal-scan "$raw_log" 2>&1) || { _exhaust="ok"; }
+    if [[ "$_exhaust" == "exhausted" ]]; then
+      J_USAGE_EXHAUSTED=1
+      J_FINAL_STATUS="usage_exhausted"
+      _hint_branch=$(git -C "$WORK_DIR" branch --show-current 2>/dev/null || echo "")
+      J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$ISSUE_NUM" "$_hint_branch" "${after_head:-$before_head}" 2>/dev/null || echo "null")
+      warn "Usage exhaustion detected — resume with: ralph resume $J_RUN_ID"
+    fi
+  fi
+
+  if [[ $_claude_exit -ne 0 && "$J_USAGE_EXHAUSTED" -eq 0 ]]; then
+    warn "claude exited ${_claude_exit} — marking run as agent_failed"
+    J_FINAL_STATUS="agent_failed"
+    _hint_branch=$(git -C "$WORK_DIR" branch --show-current 2>/dev/null || echo "")
+    J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$ISSUE_NUM" "$_hint_branch" "${after_head:-$before_head}" 2>/dev/null || echo "null")
+  fi
+
+  if [[ "$J_USAGE_EXHAUSTED" -eq 1 || $_claude_exit -ne 0 ]]; then
+    if [[ -n "${J_ISSUE:-}" ]] && echo "$before_open" | grep -qxF "$J_ISSUE"; then
+      _cur_state=$(gh issue view "$J_ISSUE" --repo "$RALPH_REPO" --json state --jq '.state' 2>/dev/null || echo "")
+      if [[ "$_cur_state" == "CLOSED" ]]; then
+        log "Issue #$J_ISSUE closed by Claude but run exhausted/failed — reopening"
+        gh issue reopen "$J_ISSUE" --repo "$RALPH_REPO" 2>/dev/null || true
+        gh issue edit "$J_ISSUE" --repo "$RALPH_REPO" --add-label "ready-for-agent" || true
+      fi
+    fi
+    exit 1
+  fi
+
+  # Close detection
+  after_open=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number --limit 100 --jq '.[].number' | sort -u)
+
+  _all_closed=$(comm -23 <(printf '%s\n' "$before_open" | grep -v '^$' | sort -u) \
+                          <(printf '%s\n' "$after_open"  | grep -v '^$' | sort -u) 2>/dev/null || true)
+
+  # Scope to the target issue — ignore issues closed by external actors during the run
+  closed_issues=""
+  if printf '%s\n' "$_all_closed" | grep -qxF "$ISSUE_NUM" 2>/dev/null; then
+    closed_issues="$ISSUE_NUM"
+  fi
+
+  if [[ -z "$closed_issues" && "$before_head" != "$after_head" ]]; then
+    log "HEAD moved but issue not closed — closing #$ISSUE_NUM"
+    gh issue close "$ISSUE_NUM" --repo "$RALPH_REPO" \
+      --comment "Closed by ralph: $(git -C "$WORK_DIR" log -1 --format='%s')" || true
+    closed_issues="$ISSUE_NUM"
+  fi
+
+  if [[ -z "$closed_issues" ]]; then
+    log "No issues closed this iteration."
+    [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "done" "verdict=no_close" 2>/dev/null || true
+    J_FINAL_STATUS="no_close"
+    J_RESUME_HINTS=$(python3 "$LIB" resume-hints "$ISSUE_NUM" "$current_branch" "${after_head:-$before_head}" 2>/dev/null || echo "null")
+    exit 0
+  fi
+
+  log "Closed: $closed_issues"
+
+  if [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]]; then
+    _closed_n=$(echo "$closed_issues" | head -1)
+    _state_update_iter "$RALPH_ITER" "reviewing" \
+      "issue_number=$_closed_n" "sha=${after_head:0:8}" "commits=1" 2>/dev/null || true
+  fi
+
+  if [[ "$before_head" == "$after_head" ]]; then
+    if [[ -n "${RALPH_RESUME_BEFORE_HEAD:-}" && "$RALPH_RESUME_BEFORE_HEAD" != "$before_head" ]]; then
+      log "HEAD unchanged this session, but resume base differs — reviewing partial commits."
+    else
+      warn "Issue(s) closed but HEAD did not move — trusting agent closure."
+      [[ -n "${RALPH_ITER:-}" && "$RALPH_ITER" != "resume" ]] && _state_update_iter "$RALPH_ITER" "done" "verdict=no_commit" 2>/dev/null || true
+      J_FINAL_STATUS="no_commit"
+      _unlock_downstream "$closed_issues"
+      exit 0
+    fi
+  fi
+
+  log "New commit in $WORK_REPO: $(git -C "$WORK_DIR" rev-parse HEAD)"
+  git -C "$WORK_DIR" show --stat HEAD | sed 's/^/         /'
+
+  _review_base="${RALPH_RESUME_BEFORE_HEAD:-$before_head}"
+  if ! _run_codex_review "$WORK_DIR" "$after_head" "$closed_issues" "$_review_base"; then
+    J_FINAL_STATUS="review_blocked"
+    J_REVIEW_RESULT="${_CODEX_REVIEW_VERDICT:-blocked}"
+    exit 0
+  fi
+
+  J_REVIEW_RESULT="${_CODEX_REVIEW_VERDICT:-clean}"
+  [[ -f "${_CODEX_REVIEW_FILE:-}" ]] && J_REVIEW_FILE="$_CODEX_REVIEW_FILE"
+
+  _unlock_downstream "$closed_issues"
+  J_FINAL_STATUS="success"
+  log "Done. Issue(s) closed and review passed."
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+loop)
+  LOOP_MAX_EXPLICIT=0 MAX=10 LOOP_PRD="" LOOP_ALLOW_RISKY=0 LOOP_SCHEDULE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h) _usage_loop; exit 0 ;;
+      --max)     [[ $# -lt 2 ]] && { echo "error: --max requires N" >&2; exit 1; }; MAX="$2"; LOOP_MAX_EXPLICIT=1; shift 2 ;;
+      --prd)     [[ $# -lt 2 ]] && { echo "error: --prd requires N" >&2; exit 1; }; LOOP_PRD="$2"; shift 2 ;;
+      --allow-risky) LOOP_ALLOW_RISKY=1; shift ;;
+      --schedule) [[ $# -lt 2 ]] && { echo "error: --schedule requires datetime" >&2; exit 1; }; LOOP_SCHEDULE="$2"; shift 2 ;;
+      -*) echo "error: unknown flag: $1" >&2; _usage_loop; exit 1 ;;
+      *)  echo "error: unexpected argument: $1" >&2; _usage_loop; exit 1 ;;
+    esac
+  done
+
+  [[ "$LOOP_MAX_EXPLICIT" -eq 0 && -n "$LOOP_PRD" ]] && MAX=5
+
+  _loop_prd_cand_count=0
+  if [[ -n "$LOOP_PRD" ]]; then
+    _loop_prd_cand_count=$(gh issue list --repo "$RALPH_REPO" --state open \
+      --label ready-for-agent --json number,title,labels,body --limit 100 2>/dev/null \
+      | python3 "$LIB" prd-filter "$LOOP_PRD" 2>/dev/null | grep -co $'\x1e') || _loop_prd_cand_count=0
+  fi
+
+  _sched_parsed="" _sched_epoch="" _sched_iso=""
+  if [[ -n "$LOOP_SCHEDULE" ]]; then
+    _sched_parsed=$(python3 "$LIB" parse-dt "$LOOP_SCHEDULE" 2>&1) || die "$_sched_parsed"
+    _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
+    _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
+    RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE=1
+    RALPH_PREFLIGHT_SCHEDULE_EPOCH="$_sched_epoch"
+  fi
+
+  _preflight "" "" "$LOOP_ALLOW_RISKY" "$_loop_prd_cand_count" || {
+    unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+    exit 2
+  }
+  unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+
+  if [[ -n "$LOOP_SCHEDULE" ]]; then
+    _sched_stored_cmd="loop${LOOP_PRD:+ --prd $LOOP_PRD} --max $MAX"
+    [[ "$LOOP_ALLOW_RISKY" == "1" ]] && _sched_stored_cmd+=" --allow-risky"
+    _sched_flags_json=$(python3 "$LIB" json-build \
+      "prd=${LOOP_PRD:-null}" "max=$MAX" "allow_risky=$([[ "$LOOP_ALLOW_RISKY" == "1" ]] && echo true || echo false)")
+    if ! _schedule_create "$_sched_stored_cmd" "$_sched_flags_json" "$LOOP_ALLOW_RISKY" \
+      "$_sched_iso" "$_sched_epoch" "${JOURNAL_PREFLIGHT_DECISION:-GO}" "${JOURNAL_PREFLIGHT_WARNINGS:-}"; then
+      die "schedule: failed to register OS job for $_job_id"
+    fi
+    log "────────────────────────────────────────────"
+    log "Scheduled  : $_job_id"
+    log "  Command  : $_sched_stored_cmd"
+    log "  Run at   : $LOOP_SCHEDULE"
+    log "  Backend  : ${_SCHED_BACKEND}"
+    log "────────────────────────────────────────────"
+    exit 0
+  fi
+
+  _lock_acquire "loop${LOOP_PRD:+ --prd $LOOP_PRD} --max $MAX"
+
+  if type -t _state_init &>/dev/null; then
+    _state_init "$MAX"
+    _footer_setup
+    _loop_cleanup() { _lock_release; _footer_teardown; _state_cleanup; }
+    trap '_loop_cleanup' EXIT
+    trap '_loop_cleanup; exit 130' INT
+    trap '_loop_cleanup; exit 143' TERM
+    trap '_footer_handle_winch' WINCH
+  else
+    trap '_lock_release' EXIT
+    trap '_lock_release; exit 130' INT
+    trap '_lock_release; exit 143' TERM
+  fi
+
+  [[ -n "$LOOP_PRD" ]] \
+    && log "Loop start (PRD #$LOOP_PRD) — max $MAX, model: $MODEL" \
+    || log "Loop start — max $MAX, model: $MODEL, core: $RALPH_REPO"
+  log "══════════════════════════════════════"
+
+  success=0 failed=0 _prd_skip_nums=""
+
+  for (( i=1; i<=MAX; i++ )); do
+    if [[ -n "$LOOP_PRD" ]]; then
+      prd_picked=$(_pick_issue_from_prd "$LOOP_PRD" "$_prd_skip_nums" 2>/dev/null) || {
+        log "No eligible children of PRD #$LOOP_PRD. Loop done after $((i-1)) iteration(s)."
+        break
+      }
+      IFS='|' read -r _prd_issue_num _ _ <<< "$prd_picked"
+
+      type -t _state_update_iter &>/dev/null && _state_update_iter "$i" "starting" 2>/dev/null || true
+      log "── Iteration $i / $MAX (PRD #$LOOP_PRD → issue #$_prd_issue_num) ──"
+
+      if RALPH_ITER="$i" RALPH_STATE_DIR="${RALPH_STATE_DIR:-}" "$0" once --issue "$_prd_issue_num" $([[ "$LOOP_ALLOW_RISKY" == "1" ]] && echo --allow-risky); then
+        (( success++ )) || true
+      else
+        exit_code=$?
+        (( failed++ )) || true
+        [[ $exit_code -eq 130 ]] && { log "Interrupted — stopping loop."; break; }
+        [[ $exit_code -eq 2 ]] && { _prd_skip_nums="${_prd_skip_nums} ${_prd_issue_num}"; warn "preflight NO_GO for #$_prd_issue_num — skipping"; continue; }
+        [[ $exit_code -eq 1 ]] && { warn "agent error for #$_prd_issue_num — stopping loop."; break; }
+      fi
+    else
+      type -t _state_update_iter &>/dev/null && _state_update_iter "$i" "starting" 2>/dev/null || true
+      log "── Iteration $i / $MAX ──"
+
+      if RALPH_ITER="$i" RALPH_STATE_DIR="${RALPH_STATE_DIR:-}" "$0" once $([[ "$LOOP_ALLOW_RISKY" == "1" ]] && echo --allow-risky); then
+        (( success++ )) || true
+      else
+        exit_code=$?
+        [[ $exit_code -eq 130 ]] && { log "Interrupted — stopping loop."; break; }
+        [[ $exit_code -eq 3 ]] && { log "No ready-for-agent issues. Loop done."; break; }
+        (( failed++ )) || true
+        [[ $exit_code -eq 2 ]] && { log "preflight NO_GO — stopping loop."; break; }
+        [[ $exit_code -eq 1 ]] && { log "once exited with error — stopping loop."; break; }
+      fi
+    fi
+
+    if [[ $i -lt $MAX ]]; then
+      log "Cooldown 5s… (Ctrl-C to stop)"
+      sleep 5 & wait $! || { log "Interrupted during cooldown."; break; }
+    fi
+  done
+
+  log "══════════════════════════════════════"
+  log "Done. Succeeded: $success  Failed: $failed"
+
+  remaining=$(gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number,title \
+    --jq '.[] | "  #\(.number) \(.title)"' 2>/dev/null || true)
+  [[ -n "$remaining" ]] && { log "Still open:"; echo "$remaining"; } || log "All resolved."
+
+  _prune_stale
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+resume)
+  if [[ "${1:-}" == "list" ]]; then
+    python3 "$LIB" resume-list "$RUN_DIR"
+    exit 0
+  fi
+
+  [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && { _usage_resume; exit 0; }
+
+  RESUME_RUN_ID="${1:-}"
+  [[ -z "$RESUME_RUN_ID" ]] && { echo "error: resume requires RUN_ID" >&2; _usage_resume; exit 1; }
+  shift || true
+
+  RESUME_SCHEDULE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h) _usage_resume; exit 0 ;;
+      --schedule) [[ $# -lt 2 ]] && { echo "error: --schedule requires datetime" >&2; exit 1; }; RESUME_SCHEDULE="$2"; shift 2 ;;
+      -*) echo "error: unknown flag: $1" >&2; exit 1 ;;
+      *)  echo "error: unexpected arg: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  log "account : $ACCOUNT"
+  log "model   : $MODEL"
+
+  RESUME_ISSUE="" RESUME_BRANCH="" RESUME_ROUTE="" RESUME_REPO_DIR=""
+  _resume_prechecks "$RESUME_RUN_ID" || exit 1
+
+  if [[ -n "$RESUME_SCHEDULE" ]]; then
+    _sched_parsed=$(python3 "$LIB" parse-dt "$RESUME_SCHEDULE" 2>&1) || die "$_sched_parsed"
+    _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
+    _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
+
+    RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE=1 RALPH_PREFLIGHT_SCHEDULE_EPOCH="$_sched_epoch"
+    if ! _preflight "$RESUME_ISSUE" "$RESUME_ROUTE" "${RESUME_ALLOW_RISKY:-0}"; then
+      unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH; exit 1
+    fi
+    unset RALPH_PREFLIGHT_ALLOW_FUTURE_USAGE RALPH_PREFLIGHT_SCHEDULE_EPOCH
+
+    _sched_stored_cmd="resume $RESUME_RUN_ID"
+    _sched_flags_json=$(python3 "$LIB" json-build "resume_run_id=$RESUME_RUN_ID" "allow_risky=$([[ "${RESUME_ALLOW_RISKY:-0}" == "1" ]] && echo true || echo false)")
+    if ! _schedule_create "$_sched_stored_cmd" "$_sched_flags_json" "${RESUME_ALLOW_RISKY:-0}" \
+      "$_sched_iso" "$_sched_epoch" "${JOURNAL_PREFLIGHT_DECISION:-GO}" "${JOURNAL_PREFLIGHT_WARNINGS:-}"; then
+      die "schedule: failed to register OS job for $_job_id"
+    fi
+    log "────────────────────────────────────────────"
+    log "Scheduled  : $_job_id  |  Resume: $RESUME_RUN_ID  |  Run at: $RESUME_SCHEDULE"
+    log "────────────────────────────────────────────"
+    exit 0
+  fi
+
+  log "resuming : issue #$RESUME_ISSUE on branch '$RESUME_BRANCH'"
+
+  _preflight "$RESUME_ISSUE" "$RESUME_ROUTE" "${RESUME_ALLOW_RISKY:-0}" || exit 1
+  _lock_acquire "resume $RESUME_RUN_ID"
+  trap '_lock_release' EXIT
+  trap '_lock_release; exit 130' INT
+  trap '_lock_release; exit 143' TERM
+
+  _current_branch=$(git -C "$RESUME_REPO_DIR" branch --show-current)
+  if [[ "$_current_branch" != "$RESUME_BRANCH" ]]; then
+    log "resume: checking out recorded branch '${RESUME_BRANCH}'"
+    git -C "$RESUME_REPO_DIR" checkout "$RESUME_BRANCH" \
+      || { log "resume FAIL: could not checkout '${RESUME_BRANCH}'"; exit 1; }
+  fi
+
+  RESUME_ORIGINAL_BEFORE_HEAD=$(python3 "$LIB" json-get "$RUN_DIR/run-${RESUME_RUN_ID}.json" before_head 2>/dev/null || echo "")
+
+  _resume_once_args=(once --issue "$RESUME_ISSUE")
+  [[ "${RESUME_ALLOW_RISKY:-0}" == "1" ]] && _resume_once_args+=(--allow-risky)
+  set +e
+  RALPH_ITER=resume RALPH_RESUME_FROM="$RESUME_RUN_ID" \
+    RALPH_RESUME_BEFORE_HEAD="$RESUME_ORIGINAL_BEFORE_HEAD" \
+    "$0" "${_resume_once_args[@]}"
+  _resume_exit=$?
+  set -e
+
+  if [[ "$_resume_exit" -eq 0 ]]; then
+    python3 "$LIB" update-status "$RUN_DIR/run-${RESUME_RUN_ID}.json" "resumed" 2>/dev/null \
+      || warn "resume: could not update source journal status"
+  fi
+  exit "$_resume_exit"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+run-scheduled)
+  _RS_JOB_ID="${1:-}"
+  [[ -z "$_RS_JOB_ID" ]] && die "run-scheduled: missing JOB_ID"
+  [[ ! -f "$SCHED_DIR/${_RS_JOB_ID}.json" ]] && die "run-scheduled: schedule not found"
+
+  _rs_meta=$(python3 "$LIB" sched-batch "$SCHED_DIR/${_RS_JOB_ID}.json" 2>/dev/null)
+  _rs_status=$(sed -n '1p' <<< "$_rs_meta")
+  _rs_run_at=$(sed -n '2p' <<< "$_rs_meta")
+  _rs_stale_flag=$(sed -n '3p' <<< "$_rs_meta")
+  _rs_log=$(sed -n '4p' <<< "$_rs_meta")
+  _rs_cmd=$(sed -n '5p' <<< "$_rs_meta")
+  _rs_allow_risky=$(sed -n '6p' <<< "$_rs_meta")
+  _rs_issue_num=$(sed -n '7p' <<< "$_rs_meta")
+  _rs_route=$(sed -n '8p' <<< "$_rs_meta")
+  _rs_run_at_epoch=$(sed -n '9p' <<< "$_rs_meta")
+  _rs_now_epoch=$(sed -n '10p' <<< "$_rs_meta")
+
+  [[ "$_rs_status" != "pending" ]] && die "run-scheduled: status '$_rs_status' (expected pending)"
+
+  if [[ -n "$_rs_run_at_epoch" && -n "$_rs_now_epoch" \
+        && "$_rs_now_epoch" -lt "$(( _rs_run_at_epoch - 60 ))" ]]; then
+    log "run-scheduled: $_RS_JOB_ID too early — skipping"
+    exit 0
+  fi
+
+  if [[ "$_rs_stale_flag" == "1" ]]; then
+    log "run-scheduled: $_RS_JOB_ID skipped (stale)"
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_RS_JOB_ID" "status=skipped"
+    _rs_backend=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend 2>/dev/null || echo "none")
+    if [[ "$_rs_backend" != "none" ]]; then
+      _rs_backend_id=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend_id 2>/dev/null || echo "none")
+      _sched_cancel "$_RS_JOB_ID" "$_rs_backend" "$_rs_backend_id" 2>/dev/null || true
+    fi
+    exit 0
+  fi
+
+  [[ -z "$_rs_log" ]] && die "run-scheduled: no log_path"
+  [[ -z "$_rs_cmd" ]] && die "run-scheduled: no command"
+  mkdir -p "$(dirname "$_rs_log")"
+
+  JOURNAL_PREFLIGHT_DECISION="NO_GO" JOURNAL_PREFLIGHT_WARNINGS=""
+  _rs_prev_cache_ttl="${RALPH_CLAUDE_AUTH_CACHE_TTL:-}"
+  RALPH_CLAUDE_AUTH_CACHE_TTL=0
+  if ! _preflight "${_rs_issue_num:-}" "${_rs_route:-}" "$_rs_allow_risky"; then
+    RALPH_CLAUDE_AUTH_CACHE_TTL="${_rs_prev_cache_ttl}"
+    _rs_pf_json=$(python3 "$LIB" json-build "decision=$JOURNAL_PREFLIGHT_DECISION" "warnings=${JOURNAL_PREFLIGHT_WARNINGS:-}")
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_RS_JOB_ID" "status=failed" --preflight-at-runtime-json "$_rs_pf_json"
+    _rs_backend=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend 2>/dev/null || echo "none")
+    if [[ "$_rs_backend" != "none" ]]; then
+      _rs_backend_id=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend_id 2>/dev/null || echo "none")
+      _sched_cancel "$_RS_JOB_ID" "$_rs_backend" "$_rs_backend_id" 2>/dev/null || true
+    fi
+    die "run-scheduled: runtime preflight NO_GO"
+  fi
+  RALPH_CLAUDE_AUTH_CACHE_TTL="${_rs_prev_cache_ttl}"
+
+  _rs_pf_json=$(python3 "$LIB" json-build "decision=$JOURNAL_PREFLIGHT_DECISION" "warnings=${JOURNAL_PREFLIGHT_WARNINGS:-}")
+
+  _rs_subcmd="${_rs_cmd%% *}"
+  case "$_rs_subcmd" in
+    once|loop|resume|ping) ;;
+    *) die "run-scheduled: unknown subcommand '${_rs_subcmd}'" ;;
+  esac
+
+  python3 "$LIB" sched-update "$SCHED_DIR" "$_RS_JOB_ID" "status=running" "pid=$$" --preflight-at-runtime-json "$_rs_pf_json"
+  log "run-scheduled: starting $_RS_JOB_ID — command: $_rs_cmd"
+
+  _rs_before_ts=$(date +%s)
+  _rs_exit=0
+  # shellcheck disable=SC2086
+  "$0" $_rs_cmd >> "$_rs_log" 2>&1 || _rs_exit=$?
+
+  _rs_run_id=""
+  while IFS= read -r _jf; do
+    _jf_ts=$(stat -f%m "$_jf" 2>/dev/null || stat -c%Y "$_jf" 2>/dev/null || echo 0)
+    if [[ "$_jf_ts" -ge "$_rs_before_ts" ]]; then
+      _rs_run_id=$(python3 "$LIB" json-get "$_jf" run_id 2>/dev/null || echo "")
+      break
+    fi
+  done < <(find "$RUN_DIR" -maxdepth 1 -name 'run-*.json' 2>/dev/null | sort -r)
+
+  if [[ $_rs_exit -eq 0 ]]; then
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_RS_JOB_ID" "status=done" ${_rs_run_id:+"run_id=${_rs_run_id}"}
+    log "run-scheduled: $_RS_JOB_ID completed"
+  else
+    python3 "$LIB" sched-update "$SCHED_DIR" "$_RS_JOB_ID" "status=failed" ${_rs_run_id:+"run_id=${_rs_run_id}"}
+    warn "run-scheduled: $_RS_JOB_ID exited $_rs_exit"
+  fi
+
+  _rs_backend=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend 2>/dev/null || echo "none")
+  if [[ "$_rs_backend" != "none" ]]; then
+    _rs_backend_id=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_RS_JOB_ID" backend_id 2>/dev/null || echo "none")
+    _sched_cancel "$_RS_JOB_ID" "$_rs_backend" "$_rs_backend_id" 2>/dev/null || true
+    log "run-scheduled: $_RS_JOB_ID unloaded OS job ($_rs_backend)"
+  fi
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+schedule)
+  _SCHED_SUBCMD="${1:-}"; shift || true
+  case "$_SCHED_SUBCMD" in
+    list)   python3 "$LIB" sched-list "$SCHED_DIR" ;;
+    show)   [[ -z "${1:-}" ]] && die "schedule show: missing JOB_ID"
+            python3 "$LIB" sched-show "$SCHED_DIR" "$1" ;;
+    logs)   [[ -z "${1:-}" ]] && die "schedule logs: missing JOB_ID"
+            _sl_job_id="$1"; shift || true
+            _sl_log=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sl_job_id" log_path 2>/dev/null || echo "")
+            [[ -z "$_sl_log" ]] && die "schedule logs: no log_path"
+            if [[ "${1:-}" == "--follow" ]]; then
+              if [[ ! -f "$_sl_log" ]]; then
+                _sl_run_at=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sl_job_id" run_at 2>/dev/null || echo "")
+                printf "${_DIM}Waiting for ${_sl_job_id} to start${_sl_run_at:+ (scheduled: ${_sl_run_at})}…${_R}\n" >&2
+                while [[ ! -f "$_sl_log" ]]; do
+                  sleep 2
+                done
+                printf "${_OK}${_BOLD}Log appeared — streaming${_R}\n" >&2
+              fi
+              exec tail -f "$_sl_log"
+            fi
+            cat "$_sl_log" 2>/dev/null || echo "(log not yet created)" ;;
+    cancel) [[ -z "${1:-}" ]] && die "schedule cancel: missing JOB_ID"
+            _sc_job_id="$1"
+            _sc_status=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sc_job_id" status 2>/dev/null || echo "")
+            [[ "$_sc_status" == "cancelled" ]] && { warn "already cancelled"; exit 0; }
+            if [[ "$_sc_status" == "running" ]]; then
+              _sc_pid=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sc_job_id" pid 2>/dev/null || echo "")
+              if [[ -n "$_sc_pid" ]] && kill -0 "$_sc_pid" 2>/dev/null; then
+                die "schedule cancel: currently running (PID $_sc_pid)"
+              fi
+              warn "stuck 'running' — cancelling stale job"
+            fi
+            _sc_backend=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sc_job_id" backend 2>/dev/null || echo "none")
+            _sc_backend_id=$(python3 "$LIB" sched-get "$SCHED_DIR" "$_sc_job_id" backend_id 2>/dev/null || echo "none")
+            _sched_cancel "$_sc_job_id" "$_sc_backend" "$_sc_backend_id"
+            python3 "$LIB" sched-update "$SCHED_DIR" "$_sc_job_id" "status=cancelled"
+            log "Cancelled: $_sc_job_id" ;;
+    ""|--help|-h) cat <<'EOF'
+ralph schedule — manage scheduled runs
+
+  ralph schedule list
+  ralph schedule show JOB_ID
+  ralph schedule logs JOB_ID [--follow]
+  ralph schedule cancel JOB_ID
+EOF
+            ;;
+    *) echo "error: unknown schedule subcommand: $_SCHED_SUBCMD" >&2; exit 1 ;;
+  esac
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+check)
+  echo ""
+  echo "ralph check — $REPO_ROOT"
+  echo "══════════════════════════════════════"
+  echo "account   : $ACCOUNT"
+  echo "repo      : $RALPH_REPO"
+  echo "claude    : ${CLAUDE_CONFIG_DIR:-(default)}"
+  echo "codex     : $CODEX_HOME"
+  echo "gh config : ${GH_CONFIG_DIR:-(default)}"
+  echo "model     : $MODEL @ effort=$EFFORT"
+  echo "codex mdl : $CODEX_MODEL"
+  echo "feature   : ${FEATURE_BRANCH:-(not set)}"
+  echo "protected : $PROTECTED_BRANCHES"
+  echo "hooks     : ${RALPH_HOOKS:-(none)}"
+  echo "schema    : $SCHEMA"
+  echo ""
+
+  echo "── Repo ──"
+  _check_dir="$REPO_ROOT"
+  _check_name=$(basename "$_check_dir")
+  _check_branch=$(git -C "$_check_dir" branch --show-current)
+  _check_status=$(git -C "$_check_dir" status --short | wc -l | tr -d ' ')
+  if _is_protected "$_check_branch"; then
+    printf "  %-30s branch: %s (protected) (%s uncommitted)\n" "$_check_name" "$_check_branch" "$_check_status"
+  else
+    printf "  %-30s ✓  branch: %s (%s uncommitted)\n" "$_check_name" "$_check_branch" "$_check_status"
+  fi
+  if declare -F _ralph_check_extra &>/dev/null; then
+    _ralph_check_extra
+  fi
+  echo ""
+
+  echo "── Auth ──"
+  echo -n "  claude : "
+  result=$(claude --model claude-haiku-4-5-20251001 -p 'reply with exactly: OK' 2>&1 | head -1) || true
+  echo "$result" | grep -qi "OK" && echo "✓" || echo "✗  $result"
+  echo -n "  gh     : "; gh api user --jq '.login' 2>&1 && true
+  echo -n "  codex  : "; CODEX_HOME="$CODEX_HOME" codex --version 2>&1 | head -1
+  echo ""
+
+  echo "── Files ──"
+  echo -n "  review schema    : "; [[ -f "$SCHEMA" ]] && echo "✓" || echo "✗  MISSING"
+  echo -n "  workspace prompt : "; [[ -f "$RALPH_DIR/prompt.md" ]] && echo "✓" || echo "✗  MISSING"
+  echo -n "  global prompt    : "; [[ -f "$HOME/.ralph/prompt.md" ]] && echo "✓" || echo "✗  MISSING"
+  echo ""
+
+  echo "── Lock ──"
+  if [[ ! -f "$LOCK_FILE" ]]; then
+    echo "  status : unlocked"
+  else
+    _lock_read_state
+    if kill -0 "$_LOCK_PID" 2>/dev/null; then
+      echo "  status : LOCKED (active PID $_LOCK_PID on ${_LOCK_HOST:-?})"
+    elif [[ "${_LOCK_HOST:-}" != "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)" ]]; then
+      echo "  status : LOCKED (different host ${_LOCK_HOST:-?})"
+    else
+      echo "  status : stale lock (PID ${_LOCK_PID:-?} dead) — removing"
+      if mkdir "${LOCK_FILE}.stale_lock" 2>/dev/null; then
+        rm -f "$LOCK_FILE"
+        rmdir "${LOCK_FILE}.stale_lock" 2>/dev/null || true
+      fi
+    fi
+    echo "  command: ${_LOCK_CMD:-?}"
+    echo "  started: ${_LOCK_STARTED:-?}"
+  fi
+  echo ""
+
+  echo "── Issues ──"
+  gh issue list --repo "$RALPH_REPO" --state open \
+    --label ready-for-agent --json number,title \
+    --jq '.[] | "  #\(.number) \(.title)"' 2>/dev/null || echo "  (none)"
+  echo ""
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+init)
+  log "Initializing ralph in $REPO_ROOT ($ACCOUNT)"
+
+  if [[ -z "$FEATURE_BRANCH" ]]; then
+    log "RALPH_FEATURE_BRANCH not set — skipping branch creation"
+  else
+    _init_dir="$REPO_ROOT"
+    _init_name=$(basename "$_init_dir")
+    current=$(git -C "$_init_dir" branch --show-current)
+    if git -C "$_init_dir" show-ref --verify --quiet "refs/heads/$FEATURE_BRANCH" 2>/dev/null; then
+      log "✓ $_init_name: '$FEATURE_BRANCH' already exists"
+    elif _is_protected "$current"; then
+      base_branch="${RALPH_BASE_BRANCH:-$current}"
+      log "Creating '$FEATURE_BRANCH' from '${base_branch}' in $_init_name"
+      git -C "$_init_dir" stash --include-untracked 2>/dev/null || true
+      git -C "$_init_dir" checkout "$base_branch" 2>/dev/null || die "Cannot checkout $base_branch in $_init_name"
+      git -C "$_init_dir" pull --ff-only origin "$base_branch" 2>/dev/null || true
+      git -C "$_init_dir" checkout -b "$FEATURE_BRANCH"
+    else
+      log "✓ $_init_name: already on non-protected branch '$current'"
+    fi
+  fi
+
+  # Workspace prompt
+  PROMPT_FILE="$RALPH_DIR/prompt.md"
+  if [[ -f "$PROMPT_FILE" ]]; then
+    log "✓ ralph/prompt.md already exists"
+  else
+    mkdir -p "$RALPH_DIR"
+    printf "What is the test command for this repo? (e.g. pytest, npm test): "
+    read -r test_cmd
+    cat > "$PROMPT_FILE" <<EOF
+# Repo-specific additions for $(basename "$REPO_ROOT")
+
+## Test command
+
+\`\`\`bash
+$test_cmd
+\`\`\`
+
+Run from repo root. All tests must pass before committing.
+EOF
+    log "Created ralph/prompt.md"
+  fi
+
+  mkdir -p "$RALPH_DIR/logs" "$RALPH_DIR/reviews" "$RUN_DIR" "$SCHED_DIR" "$SCHED_LOG_DIR"
+
+  EXCLUDE_FILE="$REPO_ROOT/.git/info/exclude"
+  mkdir -p "$(dirname "$EXCLUDE_FILE")"
+  for entry in "ralph/logs/" "ralph/reviews/" "ralph/runs/" "ralph/schedules/" "ralph/.run.lock"; do
+    grep -qF "$entry" "$EXCLUDE_FILE" 2>/dev/null || echo "$entry" >> "$EXCLUDE_FILE"
+  done
+
+  for label in "ready-for-agent" "needs-triage" "needs-info" "ready-for-human"; do
+    if gh label list --repo "$RALPH_REPO" --json name --jq '.[].name' 2>/dev/null | grep -qF "$label"; then
+      log "✓ Label '$label' exists"
+    else
+      gh label create "$label" --repo "$RALPH_REPO" --color "0075ca" --description "" 2>/dev/null \
+        && log "Created label '$label'" || warn "Could not create label '$label'"
+    fi
+  done
+
+  if declare -F _ralph_init_extra &>/dev/null; then
+    _ralph_init_extra
+  fi
+
+  _prune_stale
+  log "Done. Run 'ralph check' to verify."
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+clean-pings)
+  CP_DATE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        cat <<'CPEOF'
+ralph clean-pings — cancel pending ping schedules
+
+USAGE
+  ralph clean-pings              # cancel ALL pending pings
+  ralph clean-pings YYYY-MM-DD   # cancel pings for a specific date
+CPEOF
+        exit 0
+        ;;
+      -*) die "unknown flag: $1" ;;
+      *)  CP_DATE="$1"; shift ;;
+    esac
+  done
+
+  [[ ! -d "$SCHED_DIR" ]] && { log "No schedules directory — nothing to clean."; exit 0; }
+
+  _cp_count=0
+  for _cp_file in "$SCHED_DIR"/sched-*.json; do
+    [[ -f "$_cp_file" ]] || continue
+    _cp_parsed=$(python3 "$LIB" json-get "$_cp_file" command status run_at backend backend_id job_id 2>/dev/null) || continue
+    IFS=$'\t' read -r _cp_cmd _cp_status _cp_run_at _cp_backend _cp_backend_id _cp_job_id <<< "$_cp_parsed"
+
+    [[ "$_cp_cmd" != "ping" ]] && continue
+    [[ "$_cp_status" != "pending" ]] && continue
+
+    if [[ -n "$CP_DATE" ]]; then
+      [[ "$_cp_run_at" != "$CP_DATE"* ]] && continue
+    fi
+
+    _sched_cancel "$_cp_job_id" "$_cp_backend" "$_cp_backend_id" 2>/dev/null || true
+    rm -f "$_cp_file"
+    _cp_run_at_short="${_cp_run_at//T/ }"
+    log "Cancelled: $_cp_job_id (${_cp_run_at_short})"
+    _cp_count=$((_cp_count + 1))
+  done
+
+  log "────────────────────────────────────────────"
+  log "Cancelled $_cp_count ping schedule(s)${CP_DATE:+ for $CP_DATE}"
+  log "────────────────────────────────────────────"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+schedule-pings)
+  SP_START="04:00" SP_END="22:00" SP_DATE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        cat <<'SPEOF'
+ralph schedule-pings — schedule pings for a full day
+
+USAGE
+  ralph schedule-pings [YYYY-MM-DD] [--start HH:MM] [--end HH:MM]
+
+FLAGS
+  YYYY-MM-DD       target date (default: today)
+  --start HH:MM    first ping time (default: 04:00)
+  --end HH:MM      latest allowed ping time (default: 22:00)
+SPEOF
+        exit 0
+        ;;
+      --start) [[ $# -lt 2 || -z "${2:-}" ]] && die "--start requires HH:MM"; SP_START="$2"; shift 2 ;;
+      --end)   [[ $# -lt 2 || -z "${2:-}" ]] && die "--end requires HH:MM";   SP_END="$2";   shift 2 ;;
+      -*) die "unknown flag: $1" ;;
+      *)  SP_DATE="$1"; shift ;;
+    esac
+  done
+
+  [[ -z "$SP_DATE" ]] && SP_DATE=$(date '+%Y-%m-%d')
+
+  IFS=: read -r _sp_sh _sp_sm <<< "$SP_START"
+  IFS=: read -r _sp_eh _sp_em <<< "$SP_END"
+  _sp_sh=$((10#$_sp_sh)); _sp_sm=$((10#$_sp_sm))
+  _sp_eh=$((10#$_sp_eh)); _sp_em=$((10#$_sp_em))
+
+  _sp_interval=302  # 5h02m
+  _sp_h=$_sp_sh _sp_m=$_sp_sm _sp_count=0
+
+  log "Scheduling pings for $SP_DATE ($(printf '%02d:%02d' $_sp_sh $_sp_sm) – $(printf '%02d:%02d' $_sp_eh $_sp_em))"
+
+  while (( _sp_h * 60 + _sp_m < _sp_eh * 60 + _sp_em )); do
+    _sp_time=$(printf '%s %02d:%02d' "$SP_DATE" "$_sp_h" "$_sp_m")
+    log "  → ralph ping --schedule \"$_sp_time\""
+    "$0" ping --schedule "$_sp_time"
+    _sp_count=$((_sp_count + 1))
+
+    _sp_m=$((_sp_m + _sp_interval))
+    _sp_h=$((_sp_h + _sp_m / 60))
+    _sp_m=$((_sp_m % 60))
+  done
+
+  log "────────────────────────────────────────────"
+  log "Scheduled $_sp_count ping(s) for $SP_DATE"
+  log "────────────────────────────────────────────"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+ping)
+  PING_SCHEDULE=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --schedule) [[ $# -lt 2 || -z "${2:-}" ]] && { echo "error: --schedule requires datetime" >&2; exit 1; }; PING_SCHEDULE="$2"; shift 2 ;;
+      -*) echo "error: unknown flag: $1" >&2; exit 1 ;;
+      *)  echo "error: unexpected argument: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  log "account : $ACCOUNT"
+  log "model   : $MODEL"
+  log "ping    : minimal Claude session to keep usage counter alive"
+
+  if [[ -n "$PING_SCHEDULE" ]]; then
+    _sched_parsed=$(python3 "$LIB" parse-dt "$PING_SCHEDULE" 2>&1) || die "$_sched_parsed"
+    _sched_epoch=$(echo "$_sched_parsed" | cut -d' ' -f1)
+    _sched_iso=$(echo "$_sched_parsed"   | cut -d' ' -f2)
+
+    command -v claude &>/dev/null || die "preflight NO_GO: 'claude' not found on PATH"
+    JOURNAL_PREFLIGHT_DECISION="GO"
+
+    _sched_stored_cmd="ping"
+    _sched_flags_json=$(python3 "$LIB" json-build "ping=true")
+    if ! _schedule_create "$_sched_stored_cmd" "$_sched_flags_json" "0" \
+      "$_sched_iso" "$_sched_epoch" "$JOURNAL_PREFLIGHT_DECISION" "${JOURNAL_PREFLIGHT_WARNINGS:-}"; then
+      die "schedule: failed to register OS job for $_job_id"
+    fi
+
+    log "────────────────────────────────────────────"
+    log "Scheduled  : $_job_id"
+    log "  Command  : ping"
+    log "  Run at   : $PING_SCHEDULE"
+    log "  Backend  : ${_SCHED_BACKEND}"
+    log "────────────────────────────────────────────"
+    exit 0
+  fi
+
+  claude --model claude-haiku-4-5-20251001 -p 'reply with exactly: pong' 2>&1 | head -1
+  log "ping complete"
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+review)
+  [[ $# -lt 2 ]] && { echo "Usage: ralph review <sha> [sha ...] -- <issue> [issue ...]"; exit 1; }
+
+  shas=(); issues_arr=(); saw_sep=0
+  for arg in "$@"; do
+    if [[ "$arg" == "--" ]]; then
+      saw_sep=1
+    elif [[ $saw_sep -eq 1 || "$arg" =~ ^[0-9]+$ ]]; then
+      issues_arr+=("$arg")
+    else
+      shas+=("$arg")
+    fi
+  done
+
+  [[ ${#shas[@]} -eq 0 ]]    && { log "no SHAs given"; exit 1; }
+  [[ ${#issues_arr[@]} -eq 0 ]] && { log "no issue numbers given"; exit 1; }
+
+  mkdir -p "$RALPH_DIR/logs" "$RALPH_DIR/reviews"
+
+  for sha in "${shas[@]}"; do
+    ts=$(date +%Y%m%dT%H%M%S)
+    result_file="$RALPH_DIR/reviews/review-${ts}-${sha:0:8}.json"
+    commit_title=$(git -C "$REPO_ROOT" log -1 --format="%s" "$sha" 2>/dev/null || echo "unknown")
+    diff_stat=$(git -C "$REPO_ROOT" show --stat "$sha" 2>/dev/null | head -40 || true)
+    diff_body=$(git -C "$REPO_ROOT" show "$sha" 2>/dev/null | head -"${RALPH_DIFF_LINES:-800}" || true)
+
+    log "Reviewing ${sha:0:12} — $commit_title"
+
+    set +e
+    CODEX_HOME="$CODEX_HOME" codex exec \
+      -m "$CODEX_MODEL" --output-schema "$SCHEMA" -o "$result_file" \
+      -c model_reasoning_effort=xhigh \
+      "You are reviewing a commit from an AI coding agent.
+Commit: $sha  Title: $commit_title  Repo: $(basename "$REPO_ROOT")
+Issues: $(IFS=,; echo "${issues_arr[*]}")
+
+--- DIFF STAT ---
+${diff_stat}
+
+--- DIFF ---
+${diff_body}
+
+Review focus:
+1. Correctness — logic bugs, off-by-ones, wrong error handling, security issues
+2. AGENTS.md invariants — if AGENTS.md exists at the repo root, flag any rule violations by rule ID
+3. Tests — are tests added/updated? Do they exercise the new behaviour?
+4. Convention — does new code follow existing patterns in the codebase?
+${RALPH_CODEX_REVIEW_EXTRA:+$RALPH_CODEX_REVIEW_EXTRA}
+
+Classify each finding as blocker / concern / nit.
+Set verdict to 'clean' only if no blockers and no concerns." \
+      2>&1 | sed 's/^/[codex] /'
+    codex_exit=$?
+    set -e
+
+    if [[ $codex_exit -ne 0 || ! -s "$result_file" ]]; then
+      log "Codex exited $codex_exit or no output"
+      continue
+    fi
+
+    parsed=$(python3 "$LIB" codex-parse "$result_file" counts 2>/dev/null || printf 'unknown\t0\t0\t0')
+    verdict=$(echo "$parsed"  | cut -f1)
+    blockers=$(echo "$parsed" | cut -f2)
+    concerns=$(echo "$parsed" | cut -f3)
+    nits=$(echo "$parsed"     | cut -f4)
+
+    log "────────────────────────────────────────────"
+    log "Verdict: ${verdict} | blockers=${blockers} concerns=${concerns} nits=${nits}"
+    log "Saved: ${result_file}"
+    log "────────────────────────────────────────────"
+
+    findings_md=$(python3 "$LIB" codex-parse "$result_file" findings 2>/dev/null \
+      || echo "*(could not render findings)*")
+
+    header="## Codex review of \`${sha:0:12}\`
+Reviewer: codex ($ACCOUNT) | $commit_title"
+    actionable=$(( blockers + concerns ))
+
+    for n in "${issues_arr[@]}"; do
+      if [[ $actionable -gt 0 ]]; then
+        gh issue reopen "$n" --repo "$RALPH_REPO" || true
+        gh issue edit "$n" --repo "$RALPH_REPO" --add-label ready-for-agent || true
+        gh issue comment "$n" --repo "$RALPH_REPO" --body "${header}
+
+Reopened — fix blockers/concerns before merging.
+
+${findings_md}" || true
+      else
+        gh issue comment "$n" --repo "$RALPH_REPO" --body "${header}
+
+${findings_md}" || true
+      fi
+    done
+  done
+  ;;
+
+# ─────────────────────────────────────────────────────────────────────────────
+*)
+  echo "error: unknown subcommand: $CMD" >&2
+  _usage >&2
+  exit 1
+  ;;
+esac

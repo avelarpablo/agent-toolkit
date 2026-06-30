@@ -1,76 +1,83 @@
-# AFK Agent (ralph-core)
+# AFK Agent (ralph)
 
-> Extracted from root CLAUDE.md. This is the detailed reference for running
-> ralph-core, issue conventions, blocker chains, and prerequisites.
-
-`ralph-core` is a workspace-specific AFK agent runner that adapts the global
-`ralph` system for this multi-repo workspace. Issues are tracked on
-`discount-genie-core` (this repo) but code lives in the nested sub-repos.
-`ralph-core` bridges this gap.
+`ralph` is a generic AFK agent runner that picks GitHub issues labeled
+`ready-for-agent`, implements them with Claude, commits, closes the issue,
+and runs a blocking Codex review gate.
 
 ## How it works
 
-1. Fetches `ready-for-agent` issues from `shopstackio/discount-genie-core`
-2. Routes each issue to a sub-repo based on its title prefix (`BE:` → backend, `FE:` → frontend)
-3. Runs the shared eligibility engine — checks labels, blocker chain, sub-repo presence
-4. Ensures the target sub-repo is on a feature branch (creates one from `develop` if needed)
-5. Acquires a workspace lock (prevents concurrent runs)
-6. Runs Claude inside the sub-repo (Claude reads that repo's CLAUDE.md/AGENTS.md)
-7. Detects usage exhaustion — writes resume hints if Claude hits limits
-8. After Claude finishes: verifies HEAD moved, runs a blocking Codex review gate
-9. Closes the issue on the core repo; unlocks any downstream issues whose blockers are now all closed
+1. Auto-detects repo root and GitHub slug from `git remote`
+2. Fetches `ready-for-agent` issues from the repo
+3. Runs the eligibility engine — checks labels, blocker chains
+4. Optionally routes to sub-repos via `RALPH_HOOKS` (for multi-repo workspaces)
+5. Ensures the repo is on a feature branch (creates one if `RALPH_FEATURE_BRANCH` is set)
+6. Acquires a workspace lock (prevents concurrent runs)
+7. Runs Claude in the target repo
+8. Detects usage exhaustion — writes resume hints if Claude hits limits
+9. After Claude finishes: verifies HEAD moved, runs a blocking Codex review gate
+10. Closes the issue; unlocks any downstream issues whose blockers are now all closed
 
 ## Architecture
 
-`ralph-core` is pure bash orchestration. All Python operations go through a
-single helper: `ralph/lib/core.py` with ~25 subcommands. Usage from bash:
-`python3 "$LIB" <subcommand> [args]`. This replaces inline python3 -c calls
-and the previous separate Python files (journal.py, preflight.py, sched_meta.py).
+`ralph` is pure bash orchestration. All Python operations go through a single
+helper: `lib/core.py` with ~25 subcommands. Usage from bash:
+`python3 "$LIB" <subcommand> [args]`.
+
+Multi-repo workspaces extend ralph via `RALPH_HOOKS` — a shell file that
+overrides routing functions (`_route_issue`, `_repo_dir`, `_repo_name`) and
+init/check hooks (`_ralph_init_extra`, `_ralph_check_extra`).
 
 ## Commands
 
 ```bash
-./ralph/ralph-core once                           # one iteration (next eligible issue)
-./ralph/ralph-core once --issue 42                # target a specific issue
-./ralph/ralph-core once --prd 20                  # pick next child of PRD #20
-./ralph/ralph-core once --prd 20 --allow-risky    # same, allow risky issues
-./ralph/ralph-core once --schedule "2026-06-04 09:00"  # defer to a future time
-./ralph/ralph-core loop                           # loop until done (default max 10)
-./ralph/ralph-core loop --max 5 --prd 20          # loop over PRD children (max 5)
-./ralph/ralph-core resume list                    # list resumable interrupted runs
-./ralph/ralph-core resume 20260528T091500-a3f7c2d1  # retry an interrupted run
-./ralph/ralph-core schedule list                  # list scheduled runs
-./ralph/ralph-core schedule show JOB_ID           # inspect a scheduled run
-./ralph/ralph-core schedule logs JOB_ID [--follow]  # view scheduled run logs
-./ralph/ralph-core schedule cancel JOB_ID         # cancel a scheduled run
-./ralph/ralph-core check                          # verify auth, sub-repos, lock, issues
-./ralph/ralph-core init                           # first-time setup
-RALPH_MODEL=claude-sonnet-4-6 ./ralph/ralph-core once  # override model
-RALPH_FEATURE_BRANCH=feature/my-feature ./ralph/ralph-core once
-RALPH_DIFF_LINES=1200 ./ralph/ralph-core once     # more diff context for Codex review
+ralph once                                # one iteration (next eligible issue)
+ralph once --issue 42                     # target a specific issue
+ralph once --prd 20                       # pick next child of PRD #20
+ralph once --allow-risky                  # allow risky issues
+ralph once --schedule "2026-06-04 09:00"  # defer to a future time
+ralph loop                                # loop until done (default max 10)
+ralph loop --max 5 --prd 20              # loop over PRD children (max 5)
+ralph resume list                         # list resumable interrupted runs
+ralph resume RUN_ID                       # retry an interrupted run
+ralph review <sha> -- <issue>             # manual post-commit Codex review
+ralph schedule list                       # list scheduled runs
+ralph schedule show JOB_ID                # inspect a scheduled run
+ralph schedule logs JOB_ID [--follow]     # view scheduled run logs
+ralph schedule cancel JOB_ID              # cancel a scheduled run
+ralph check                               # verify auth, config, issues
+ralph init                                # first-time setup
+ralph ping                                # minimal Claude session (keeps usage alive)
+ralph schedule-pings                      # schedule pings for a full day
+ralph clean-pings                         # cancel pending ping schedules
+```
+
+## Environment variables
+
+```bash
+RALPH_REPO=org/repo              # GitHub owner/repo (auto-detected from git remote)
+RALPH_HOOKS=/path/to/hooks.sh    # shell file with routing overrides
+RALPH_PROTECTED_BRANCHES="main"  # space-separated (default: main)
+RALPH_BASE_BRANCH=main           # branch to create feature branches from
+RALPH_FEATURE_BRANCH=feature/x   # target feature branch
+RALPH_MODEL=claude-opus-4-6      # Claude model (default: claude-opus-4-6)
+RALPH_EFFORT=medium              # Claude effort (default: medium)
+RALPH_CODEX_MODEL=gpt-5.5        # Codex review model (default: gpt-5.5)
+RALPH_CODEX_REVIEW_EXTRA="..."   # additional review focus lines
+RALPH_DIFF_LINES=800             # max diff lines for Codex review (default: 800)
+RALPH_SKIP_CODEX=1               # skip Codex review gate
+RALPH_GATE_STRICT=1              # fail-closed on inconclusive reviews
+RALPH_RETENTION_DAYS=30          # prune journals/schedules older than N days
+RALPH_CROSS_REPO_KEYWORDS='{}'   # JSON: cross-repo keyword detection for core.py
+RALPH_VERBOSE=1                  # shell trace
 ```
 
 ## Issue convention
 
-**All implementation issues (vertical slices, bugs, features) that target the
-backend or frontend are filed on `shopstackio/discount-genie-core` — never on
-the sub-repos directly.** The centralized queue on this repo is what allows
-ralph-core to manage cross-repo work, respect blocker chains, and unlock
-downstream issues. Filing issues on the sub-repos splits the queue and breaks
-this.
+Issues need the `ready-for-agent` label to be picked up. In single-repo mode,
+any issue with this label is eligible (no title prefix required).
 
-Issues **must** have a `BE:` or `FE:` title prefix for routing:
-
-| Prefix | Target sub-repo            | Example                                        |
-| ------ | -------------------------- | ---------------------------------------------- |
-| `BE:`  | `discount-genie-backend/`  | `BE: KlaviyoIntegration table + config + CRUD` |
-| `FE:`  | `discount-genie/`          | `FE: Settings page + nav link`                 |
-| `PRD:` | Skipped (not implementable) | `PRD: Klaviyo OAuth Integration`              |
-
-Issues without a recognized prefix are skipped with a warning.
-
-PRDs get `PRD:` prefix and should **not** have the `ready-for-agent` label —
-they are parent tracking issues, not implementable work units.
+Multi-repo workspaces define custom routing via `RALPH_HOOKS` — the hooks file
+overrides `_route_issue()` to parse title prefixes and map to sub-repos.
 
 ## PRD parent convention
 
@@ -79,97 +86,79 @@ section. This enables `--prd N` filtering:
 
 ```markdown
 ## Parent
-- #20 (PRD: Klaviyo OAuth Integration)
+- #20 (PRD: Feature Name)
 ```
 
 ## Blocker chain
 
-Issues can declare dependencies via a `## Blocked by` section in their body:
+Issues can declare dependencies via a `## Blocked by` section:
 
 ```markdown
 ## Blocked by
-- #2 (BE: KlaviyoIntegration table + config + CRUD) — needs the model and config
+- #2 (Some prerequisite issue) — needs the model and config
 ```
 
-`ralph-core` parses these, checks if each blocker is closed, and skips blocked
-issues. After closing an issue, it scans all open issues for newly-unblocked
-ones and adds the `ready-for-agent` label.
+ralph parses these, checks if each blocker is closed, and skips blocked issues.
+After closing an issue, it scans all open issues for newly-unblocked ones and
+adds the `ready-for-agent` label.
 
 ## Labels
 
-| Label              | Meaning                                          |
-| ------------------ | ------------------------------------------------ |
-| `ready-for-agent`  | Fully specified, unblocked, ready for ralph-core |
-| `needs-triage`     | Needs human review before agent pickup           |
-| `needs-info`       | Waiting for more information                     |
-| `ready-for-human`  | Requires human action, not agent                 |
+| Label              | Meaning                                  |
+| ------------------ | ---------------------------------------- |
+| `ready-for-agent`  | Fully specified, unblocked, ready        |
+| `needs-triage`     | Needs human review before agent pickup   |
+| `needs-info`       | Waiting for more information             |
+| `ready-for-human`  | Requires human action, not agent         |
 
 Issues with `needs-triage`, `needs-info`, `ready-for-human`, or `wontfix` are
 hard-blocked and will not be picked even if they also have `ready-for-agent`.
 
 ## Workspace lock
 
-`ralph-core` uses a file lock (`ralph/.run.lock`) to prevent concurrent runs
-from corrupting sub-repo state. The lock records PID and hostname:
+ralph uses a file lock (`ralph/.run.lock`) to prevent concurrent runs.
+The lock records PID and hostname:
 
 - If a process dies, the stale lock is automatically cleaned on the next run
 - Cross-host locks are never automatically removed
-- `./ralph/ralph-core check` shows lock status
+- `ralph check` shows lock status
 
 ## Usage exhaustion & resume
 
-When Claude hits a usage/session limit mid-run, ralph-core:
+When Claude hits a usage/session limit mid-run, ralph:
 1. Detects the exhaustion from the JSONL log
 2. Records resume hints (issue, branch, HEAD) in the run journal
 3. Reopens the issue if Claude closed it before the review gate ran
 
-To resume: `./ralph/ralph-core resume list` shows resumable runs, then
-`./ralph/ralph-core resume RUN_ID` retries. Resume pre-checks verify the
-branch, HEAD, worktree, and issue eligibility before proceeding.
-
-## Scheduling
-
-Defer execution to a future time with `--schedule "YYYY-MM-DD HH:MM"`.
-Supported on macOS (launchd), Linux (systemd-run or at). The schedule stores
-metadata in `ralph/schedules/`, including preflight results at creation time and
-runtime. Use `schedule list|show|logs|cancel` to manage.
+To resume: `ralph resume list` shows resumable runs, then
+`ralph resume RUN_ID` retries.
 
 ## Codex review gate
 
-After each commit, `ralph-core` runs a blocking Codex review using
-`ralph/review-schema.json`. **Do not loosen this schema** — read the file for
-details. If blockers are found, the issue is reopened with findings. On
-multi-commit runs (including resume), the review covers the full commit range.
+After each commit, ralph runs a blocking Codex review using
+`ralph/review-schema.json`. If blockers are found, the issue is reopened with
+findings. Set `RALPH_GATE_STRICT=1` to fail-closed on inconclusive reviews.
 
-Set `RALPH_GATE_STRICT=1` to fail-closed on inconclusive reviews (default:
-fail-open with a warning).
+## Extending ralph (RALPH_HOOKS)
+
+Create a shell file that overrides these functions:
+
+```bash
+_route_issue()         # parse title -> route name (default: always "default")
+_repo_dir()            # route name -> directory path
+_repo_name()           # route name -> display name
+_ralph_init_extra()    # additional init steps (called by `ralph init`)
+_ralph_check_extra()   # additional check output (called by `ralph check`)
+```
+
+Set `RALPH_HOOKS=/path/to/hooks.sh` before running ralph. See
+`runners/ralph-dg/hooks.sh` for a working example.
 
 ## Prerequisites
 
-Before running `ralph-core`, ensure:
+1. `claude` CLI installed and authenticated
+2. `gh` CLI installed and authenticated
+3. `codex` CLI installed (for review gate)
+4. Issues filed on the repo with `ready-for-agent` label
 
-1. Sub-repos exist (`scripts/clone-repos.sh`)
-2. Sub-repos are on feature branches (not `main`/`develop`/`staging`), or set
-   `RALPH_FEATURE_BRANCH` to auto-create them
-3. Auth is configured: `claude`, `gh`, and `codex` for the account matching this
-   repo path in `~/.ralph/accounts.toml`
-4. Issues are filed on this repo with `BE:`/`FE:` prefixes and `ready-for-agent` label
-5. Global ralph prompt exists at `~/.ralph/prompt.md`
-
-Run `./ralph/ralph-core check` to verify all of the above.
-
-## Creating new feature work for ralph-core
-
-To set up a new feature for AFK agent implementation:
-
-1. Write a PRD and file it on this repo (label it `enhancement`, **not** `ready-for-agent`)
-2. Break the PRD into vertical slices using `/to-vertical-issues` or manually
-3. Each slice gets `BE:` or `FE:` prefix, `## Parent`, `## Blocked by`, `## Demo command`, and `## Acceptance criteria`
-4. Label unblocked slices `ready-for-agent`; blocked ones get labeled automatically as their blockers close
-5. Set up and run:
-   ```bash
-   RALPH_FEATURE_BRANCH=feature/<name> ./ralph/ralph-core init   # creates branches + dirs
-   RALPH_FEATURE_BRANCH=feature/<name> ./ralph/ralph-core loop   # runs the queue
-   # or for a specific PRD:
-   RALPH_FEATURE_BRANCH=feature/<name> ./ralph/ralph-core loop --prd 20
-   ```
+Run `ralph check` to verify.

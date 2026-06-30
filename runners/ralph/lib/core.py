@@ -34,16 +34,7 @@ RESUMABLE_STATUSES = {"usage_exhausted", "agent_failed", "standby"}
 
 HIGH_EFFORT_KEYWORDS = ["alembic", "generate-client", "migration"]
 
-CROSS_REPO_KEYWORDS = {
-    "frontend": [
-        "docker-compose", "alembic", "celery", "fastapi",
-        "sqlalchemy", "pytest", "uvicorn",
-    ],
-    "backend": [
-        "shopify.app.toml", "polaris", "remix", "extensions/",
-        "fly.toml", "vite", "shopify cli",
-    ],
-}
+CROSS_REPO_KEYWORDS = json.loads(os.environ.get("RALPH_CROSS_REPO_KEYWORDS", "{}")) or {}
 
 # ── Utility ──────────────────────────────────────────────────────────────────
 

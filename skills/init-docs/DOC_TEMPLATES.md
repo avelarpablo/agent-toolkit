@@ -1,23 +1,25 @@
 # Documentation templates
 
-Templates for optional project documentation files. These files are **not
-created by the init-agentic-files skill** — they are created on demand as
-the project evolves, either manually or by a documentation skill. The
-templates here define the format so documentation stays consistent and
-agent-readable.
+Bundled format references for project documentation files. The init-docs
+skill reads these during generation and produces two things from them:
 
-These files are referenced by path in `AGENTS.md` (Documentation section)
-and `CLAUDE.md` (reading instructions). In monorepos, modules can have
-their own documentation files referenced from nested `AGENTS.md` files.
+1. **Documentation skeletons** — actual files (`CONTEXT.md`, `docs/adr/README.md`,
+   etc.) with section headings and guided placeholders, populated where the
+   grill produced concrete answers.
+2. **Project-adapted templates** — stored in `.agents/templates/` for use by
+   sync-docs, grill-with-docs, and other skills that create documentation.
 
-## When to create each file
+These bundled templates are the bootstrap source. Once init-docs has run,
+the project's own templates in `.agents/templates/` take precedence.
 
-| File / Directory | When to create |
+## Files created by init-docs
+
+| File / Directory | Created when |
 |---|---|
-| `docs/adr/` | When a significant architectural decision is made (database choice, auth strategy, framework, data model). One file per decision. |
-| `CONTEXT.md` | When the project has domain terminology, business rules, or glossary terms that are not obvious from the code. |
-| `DESIGN.md` | When the project has a visual design system (colors, typography, spacing, component patterns) that agents should follow. |
-| `REFERENCES.md` | When the project ports patterns from, or is inspired by, external projects — document what came from where and when to consult the source. |
+| `CONTEXT.md` | Always — skeleton with section headings, populated from grill results. |
+| `docs/adr/README.md` | Always — explains ADR format, numbering, and when to create one. |
+| `DESIGN.md` | UI framework detected — skeleton with design system sections. |
+| `REFERENCES.md` | External references detected or mentioned during grill. |
 
 ## ADR — Architecture Decision Record
 

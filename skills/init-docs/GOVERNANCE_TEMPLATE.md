@@ -2,7 +2,7 @@
 
 This is the template for `.agents/governance.md`. The skill copies the
 generic principles and expansion guide verbatim, then generates the
-project-specific mapping section from inspection results.
+project-specific sections from inspection and grill results.
 
 ---
 
@@ -73,12 +73,17 @@ can use.
 ```
 .agents/
 ├── governance.md          # This file
-└── standards/             # Coding and architecture standards (source of truth)
-    ├── code.md            # Language, patterns, principles
-    ├── components.md      # UI component conventions (if applicable)
-    ├── database.md        # DB naming, migrations, data handling (if applicable)
-    ├── security.md        # Auth, access control, sensitive data (if applicable)
-    └── testing.md         # Testing philosophy and requirements (if applicable)
+├── standards/             # Coding and architecture standards (source of truth)
+│   ├── code.md            # Language, patterns, principles
+│   ├── components.md      # UI component conventions (if applicable)
+│   ├── database.md        # DB naming, migrations, data handling (if applicable)
+│   ├── security.md        # Auth, access control, sensitive data (if applicable)
+│   └── testing.md         # Testing philosophy and requirements (if applicable)
+└── templates/             # Project-adapted documentation templates
+    ├── adr.md             # ADR format for this project
+    ├── context.md         # CONTEXT.md format for this project
+    ├── design.md          # DESIGN.md format (if applicable)
+    └── references.md      # REFERENCES.md format
 ```
 
 `code.md` is always present — it contains universal coding principles plus
@@ -87,6 +92,11 @@ files are created when the project has the relevant concern (UI components,
 database, security, testing). Each file should cover one concern, stay under
 150 lines, and document only conventions not obvious from the code itself.
 Add new files as concerns emerge rather than expanding existing ones.
+
+Templates in `.agents/templates/` are project-adapted versions of
+documentation formats. Skills that create documentation (sync-docs,
+grill-with-docs) read templates from here when available, falling back to
+their own bundled defaults for repos without init-docs setup.
 
 ### Vendor-specific layer (`.claude/`)
 
@@ -136,19 +146,49 @@ being edited. Create one rule per standard, matching the relevant file paths.
 | `AGENTS.md` | Vendor-neutral entry point. Repo map, tech stack, commands, constraints, verification. |
 | `CLAUDE.md` | Imports `AGENTS.md` via `@`. Adds Claude-specific guidance and references. |
 
-### Optional documentation files
+## Documentation
+
+### Documentation files
 
 These files provide domain knowledge that agents read on demand. They
 are referenced by path in `AGENTS.md` and `CLAUDE.md`, never imported
 with `@`. In monorepos, modules can have their own documentation files
 referenced from nested `AGENTS.md` files.
 
-| File / Directory | When to create |
+| File / Directory | Purpose |
 |---|---|
-| `docs/adr/` | Architecture Decision Records. One file per significant decision (database choice, auth strategy, framework migration). Standard format: status, context, decision, consequences. Prefer individual ADRs over monolithic decision logs — they are individually addressable and carry status. |
-| `CONTEXT.md` | Domain terminology, glossary, business rules, entity relationships, and deferred decisions. Create when the project has domain knowledge not obvious from the code. |
-| `DESIGN.md` | Visual design system: tokens, layout patterns, navigation, component composition patterns. Create when the project has a UI with established visual conventions. |
-| `REFERENCES.md` | External projects that influenced this one. Documents what was ported from where and when to consult the original. Create when patterns were adapted from other codebases. |
+| `CONTEXT.md` | Domain terminology, glossary, business rules, entity relationships, and deferred decisions. |
+| `docs/adr/` | Architecture Decision Records. One file per significant decision. |
+| `DESIGN.md` | Visual design system: tokens, layout patterns, navigation, component composition. |
+| `REFERENCES.md` | External projects that influenced this one. What was ported and when to consult the original. |
+
+### Templates
+
+Project-adapted templates live in `.agents/templates/`. When creating new
+documentation files, read the corresponding template for the project's
+expected format:
+
+| Template | Used for |
+|---|---|
+| `.agents/templates/adr.md` | Creating new ADRs in `docs/adr/` |
+| `.agents/templates/context.md` | Updating or creating `CONTEXT.md` |
+| `.agents/templates/design.md` | Updating or creating `DESIGN.md` |
+| `.agents/templates/references.md` | Updating or creating `REFERENCES.md` |
+
+## Issue tracking
+
+Tech debt and wishlist items are tracked as GitHub issues with labels
+rather than repo files. This integrates with the triage → to-prd →
+to-vertical-issues → ralph pipeline.
+
+| Label | Purpose | When to use |
+|---|---|---|
+| `tech-debt` | Technical debt to address | Code smells, shortcuts taken, known improvements deferred during implementation |
+| `wishlist` | Ideas and nice-to-haves | Feature ideas, quality-of-life improvements, "it would be nice if..." thoughts |
+
+Create issues with the appropriate label rather than tracking these in
+repo files. This keeps the issue tracker as the single source of truth
+for work items and allows triage workflows to pick them up.
 
 ## Maintenance rules
 
@@ -159,6 +199,7 @@ referenced from nested `AGENTS.md` files.
 3. **Keep each `.agents/standards/` file under 150 lines.** Split by concern.
 4. **Review agentic files after significant development phases.** If new
    patterns, constraints, or conventions emerged, update the relevant files.
+   Consider running `/sync-docs` to detect and propose updates.
 5. **Delete stale guidance.** Outdated instructions cause more harm than
    missing ones.
 
@@ -168,6 +209,15 @@ referenced from nested `AGENTS.md` files.
   (via import), Codex, Copilot, Cursor, Gemini, and others.
 - `CLAUDE.md` imports `AGENTS.md` and adds Claude-specific behavior.
 - Other agents (Codex, Copilot, Cursor) discover `AGENTS.md` natively.
+
+## Sync metadata
+
+<!-- sync-docs reads and updates this section automatically -->
+
+| Field | Value |
+|---|---|
+| `last-synced` | `never` |
+| `last-synced-commit` | `none` |
 
 ## Project-specific mapping
 
@@ -180,10 +230,13 @@ structure. Update it as the agentic file structure evolves.
   "covers the monorepo root; nested files exist in apps/"}}
 - **`.agents/standards/`:** {{list files that exist — at minimum code.md;
   list others if created during init}}
+- **`.agents/templates/`:** {{list template files that exist}}
 - **`.claude/rules/`:** {{list files if they exist, or "not yet created —
   add when standards need path-matching"}}
-- **Documentation:** {{list docs that exist: ADRs in docs/adr/, CONTEXT.md,
-  DESIGN.md, REFERENCES.md — or "none yet"}}
+- **Documentation:** {{list docs that exist: CONTEXT.md, ADRs in docs/adr/,
+  DESIGN.md, REFERENCES.md — describe what has content vs skeleton-only}}
+- **Issue tracking:** {{describe label setup — e.g., "tech-debt and wishlist
+  labels created on GitHub"}}
 
 ---
 

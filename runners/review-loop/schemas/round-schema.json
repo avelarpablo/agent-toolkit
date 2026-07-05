@@ -11,7 +11,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["severity", "criteria_rule", "description", "file", "line"],
+        "required": ["severity", "criteria_rule", "description", "file", "line", "stance", "references_finding"],
         "properties": {
           "severity": {
             "type": "string",

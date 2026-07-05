@@ -211,7 +211,7 @@ for ((r = 1; r <= ROUNDS; r++)); do
       template="$PROMPTS_DIR/round3.md"
     fi
 
-    if ! run_claude_round "$r" "$template" "${prior[@]}"; then
+    if ! run_claude_round "$r" "$template" ${prior[@]+"${prior[@]}"}; then
       if (( r == 1 )); then
         echo "error: round 1 failed, aborting (nothing to challenge)" >&2
         exit 1
@@ -223,7 +223,7 @@ for ((r = 1; r <= ROUNDS; r++)); do
     # Codex round (even)
     template="$PROMPTS_DIR/round2.md"
 
-    if ! run_codex_round "$r" "$template" "${prior[@]}"; then
+    if ! run_codex_round "$r" "$template" ${prior[@]+"${prior[@]}"}; then
       echo "  skipping round $r due to failure, assembling with available data"
       continue
     fi

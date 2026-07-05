@@ -111,6 +111,9 @@ def cmd_build_prompt(args):
         if len(args.prior) == 1:
             prompt = prompt.replace("{prior_findings}", Path(args.prior[0]).read_text().strip())
 
+    prompt = re.sub(r"\{round\d+_findings\}", "(no findings — round was skipped)", prompt)
+    prompt = prompt.replace("{prior_findings}", "(no prior findings)")
+
     print(prompt)
 
 

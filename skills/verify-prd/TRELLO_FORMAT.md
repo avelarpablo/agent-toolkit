@@ -60,7 +60,7 @@ The tag is the parent epic, NOT a card-type label like `[VERIFY]`.
 **Links:**
 - PRD: {GitHub PRD issue URL}
 - Branch: `{branch name}` (if applicable)
-- Verify file: `VERIFY-{number}.md`
+- Verify dir: `.verify/VERIFY-{number}/`
 
 **Related issues:** {child issue numbers, e.g., #123, #124}
 ```

@@ -7,12 +7,15 @@ Templates for all generated files. The agent reads this file when creating or up
 ## Directory Structure
 
 ```
-VERIFY-{number}/
-  INDEX.md                              ← progress stats + chunk list
-  prd-level.md                          ← PRD-level test cases
-  {child#}-{slug}.md                    ← child issue chunk (e.g., 133-layout-hook.md)
-  {child#}-{slug}-done.md              ← completed chunk (renamed)
+.verify/
+  VERIFY-{number}/
+    INDEX.md                              ← progress stats + chunk list
+    prd-level.md                          ← PRD-level test cases
+    {child#}-{slug}.md                    ← child issue chunk (e.g., 133-layout-hook.md)
+    {child#}-{slug}-done.md              ← completed chunk (renamed)
 ```
+
+All verification sessions live under `.verify/` in the project root. If `.verify/` is not already in `.gitignore`, add it on first use.
 
 Always a directory, even for small PRDs with few tests. Consistency means the agent never handles two different file layouts.
 

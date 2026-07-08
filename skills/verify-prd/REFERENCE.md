@@ -18,7 +18,7 @@ Workflow logic for each command. For file templates and format conventions, see 
    - **Any test describing behavior a user or developer could observe in the running app MUST include `[browser]`** — this is not optional even if `[code]` and `[unit]` also apply
    - Tests describing pure implementation details (e.g., "no import of X remains") are `[code]` only
 5. **Scan for unit tests** — run `find` + `grep` to match test case subjects to existing test files. Tag `[unit]` and record the test file path in the chunk file. This upfront scan saves token cost across future sessions.
-6. **Create directory structure** — `VERIFY-{number}/` with INDEX.md and chunk files (see [FORMATS.md](FORMATS.md))
+6. **Create directory structure** — `.verify/VERIFY-{number}/` with INDEX.md and chunk files (see [FORMATS.md](FORMATS.md)). If `.verify/` is not already in `.gitignore`, add it.
 7. **Split test cases into chunks:**
    - Default: PRD-level tests = one chunk, each child issue = one chunk
    - If a chunk exceeds ~10 tests, split further by theme with descriptive names
@@ -30,7 +30,7 @@ Workflow logic for each command. For file templates and format conventions, see 
 
 ### Resume logic
 
-1. Read `VERIFY-{number}/INDEX.md` — show progress stats
+1. Read `.verify/VERIFY-{number}/INDEX.md` — show progress stats
 2. Find first non-`-done` chunk file
 3. Open chunk → find first ⬜ test case
 4. Begin the test flow (see below)
@@ -80,7 +80,7 @@ If the human left mid-test in a previous session, any draft evidence held in con
 
 > **No-Trello mode:** print "No Trello card to diff — showing local progress summary" and display the INDEX.md stats instead.
 
-1. Find the `VERIFY-*/` directory in project root (error if none)
+1. Find the `.verify/VERIFY-*/` directory in project root (error if none)
 2. Read INDEX.md to get the Trello card ID and chunk file list
 3. Fetch Trello card's current checklist state
 4. Iterate chunk files, map checklist items to local test case statuses by number
@@ -100,7 +100,7 @@ If the human left mid-test in a previous session, any draft evidence held in con
 
 > **No-Trello mode:** print "No Trello card — nothing to sync" and exit.
 
-1. Find `VERIFY-*/` directory, read all chunk files for test case statuses
+1. Find `.verify/VERIFY-*/` directory, read all chunk files for test case statuses
 2. For each test case, check/uncheck the corresponding Trello checklist item:
    - ✅ or ⚠️ → checked
    - ⬜, ❌, or ⏸️ → unchecked
@@ -116,7 +116,7 @@ Only runs when all chunks are `-done`. If any active chunk remains, refuse and l
 1. **Update agentic files** — if findings revealed context gaps or codebase misunderstandings, update relevant `CLAUDE.md` or `docs/` files
 2. **Post final Trello comment** (if Trello enabled) — condensed summary (not full evidence), move card to Done list
 3. **Comment on GitHub PRD issue** — condensed summary: X/Y passed, Z deferred (with reasons), key findings, agentic file updates. If non-related findings exist, include a summary with links to any follow-up issues/PRDs created. If design decisions exist, reference the follow-up PRD.
-4. **Delete `VERIFY-{number}/` directory** — permanent record lives on the GitHub issue comment
+4. **Delete `.verify/VERIFY-{number}/` directory** — permanent record lives on the GitHub issue comment. If `.verify/` is now empty, remove it too.
 5. **Suggest PR creation** — ask user, don't auto-create
 
 ## `--refresh-format` command

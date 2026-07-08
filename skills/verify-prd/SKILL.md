@@ -61,7 +61,8 @@ See [REFERENCE.md](REFERENCE.md) for workflows, [FORMATS.md](FORMATS.md) for fil
 
 - The PRD is the contract — verify the PRD, not each issue in isolation
 - One active verification at a time — `--diff`, `--sync`, `--close` auto-detect the VERIFY directory
-- VERIFY directory lives in `discount-genie-core/` root, never sub-repos
+- VERIFY directories live under `.verify/` in the project root (e.g., `.verify/VERIFY-118/`)
+- If `.verify/` is not already in `.gitignore`, add it — these are verification artifacts, not maintained code
 - Markdown is source of truth; Trello is an optional mirror synced on demand
 - Never auto-close while any ❌ exists
 

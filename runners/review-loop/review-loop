@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIB="$SCRIPT_DIR/lib/helpers.py"
 SCHEMA="$SCRIPT_DIR/schemas/round-schema.json"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
-REVIEWS_DIR="$SCRIPT_DIR/reviews"
+REVIEWS_DIR=".reviews"
 
 CLAUDE_MODEL="${REVIEW_CLAUDE_MODEL:-claude-opus-4-6}"
 CODEX_MODEL="${REVIEW_CODEX_MODEL:-gpt-5.5}"
@@ -30,6 +30,7 @@ Options:
   --pr <N|URL>         PR number or GitHub URL to review
   --base <branch>      Base branch for diff (default: develop)
   --rounds <N>         Number of review rounds (default: 3)
+  --output-dir <path>  Output directory for reviews (default: .reviews/)
   --dry-run            Show what would happen without running reviews
 
 Examples:
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --pr)       PR="$2"; shift 2 ;;
     --base)     BASE="$2"; shift 2 ;;
     --rounds)   ROUNDS="$2"; shift 2 ;;
+    --output-dir) REVIEWS_DIR="$2"; shift 2 ;;
     --dry-run)  DRY_RUN=1; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          echo "error: unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -121,6 +123,17 @@ fi
 # ── Run directory setup ─────────────────────────────────────────────────────
 
 mkdir -p "$REVIEWS_DIR"
+
+if [[ "$REVIEWS_DIR" == ".reviews" ]]; then
+  GITIGNORE="$(git rev-parse --show-toplevel 2>/dev/null)/.gitignore"
+  if [[ -z "$(git rev-parse --show-toplevel 2>/dev/null)" ]]; then
+    GITIGNORE=".gitignore"
+  fi
+  if ! grep -qxF '.reviews/' "$GITIGNORE" 2>/dev/null; then
+    echo '.reviews/' >> "$GITIGNORE"
+  fi
+fi
+
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 

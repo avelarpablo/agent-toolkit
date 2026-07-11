@@ -17,6 +17,7 @@ PR=""
 BASE="develop"
 ROUNDS=3
 DRY_RUN=0
+INCLUDE_ALL=0
 
 usage() {
   cat <<'EOF'
@@ -32,6 +33,7 @@ Options:
   --rounds <N>         Number of review rounds (default: 3)
   --output-dir <path>  Output directory for reviews (default: .reviews/)
   --dry-run            Show what would happen without running reviews
+  --include-all        Disable default exclusion of lock/generated files
 
 Examples:
   review-loop --criteria docs/PR_REVIEW_CRITERIA.md --pr 42
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --rounds)   ROUNDS="$2"; shift 2 ;;
     --output-dir) REVIEWS_DIR="$2"; shift 2 ;;
     --dry-run)  DRY_RUN=1; shift ;;
+    --include-all) INCLUDE_ALL=1; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          echo "error: unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -66,18 +69,74 @@ if [[ ! -e "$CRITERIA" ]]; then
   exit 1
 fi
 
+# ── Diff filtering ─────────────────────────────────────────────────────────
+
+EXCLUDE_PATTERNS=(
+  'Cargo.lock'
+  'pnpm-lock.yaml'
+  'yarn.lock'
+  'package-lock.json'
+  'gen/schemas/*'
+  'generated/*'
+  '*.min.js'
+  '*.min.css'
+)
+
+filter_diff() {
+  local patterns
+  patterns=$(printf '%s\n' "${EXCLUDE_PATTERNS[@]}")
+  FILTER_PATTERNS="$patterns" python3 -c "
+import sys, fnmatch, re, os
+
+patterns = os.environ['FILTER_PATTERNS'].splitlines()
+lines = sys.stdin.read()
+chunks = re.split(r'(?=^diff --git )', lines, flags=re.MULTILINE)
+kept = []
+excluded = []
+for chunk in chunks:
+    if not chunk.strip():
+        continue
+    match = re.match(r'diff --git a/(.*?) b/(.*)', chunk)
+    if match:
+        path = match.group(2).split('\n')[0]
+        basename = path.rsplit('/', 1)[-1] if '/' in path else path
+        skip = any(
+            fnmatch.fnmatch(path, p) or
+            fnmatch.fnmatch(path, '*/' + p) or
+            fnmatch.fnmatch(basename, p)
+            for p in patterns
+        )
+        if skip:
+            excluded.append(path)
+            continue
+    kept.append(chunk)
+if excluded:
+    print(f'  filtered: {len(excluded)} file(s) excluded (lock/generated)', file=sys.stderr)
+    for e in excluded:
+        print(f'    - {e}', file=sys.stderr)
+print(''.join(kept), end='')
+"
+}
+
 # ── Diff acquisition ────────────────────────────────────────────────────────
 
-get_diff() {
+get_raw_diff() {
   if [[ -n "$PR" ]]; then
     local pr_num="$PR"
-    # Strip GitHub URL to PR number if needed
     if [[ "$PR" == http* ]]; then
       pr_num="${PR##*/}"
     fi
     gh pr diff "$pr_num"
   else
     git diff "$BASE"...HEAD
+  fi
+}
+
+get_diff() {
+  if [[ "$INCLUDE_ALL" == 1 ]]; then
+    get_raw_diff
+  else
+    get_raw_diff | filter_diff
   fi
 }
 
@@ -116,6 +175,11 @@ if [[ "$DRY_RUN" == 1 ]]; then
   echo "  diff:      $DIFF_LINES lines"
   echo "  claude:    $CLAUDE_MODEL"
   echo "  codex:     $CODEX_MODEL"
+  if [[ "$INCLUDE_ALL" == 1 ]]; then
+    echo "  filter:    disabled (--include-all)"
+  else
+    echo "  filter:    excluding lock/generated files"
+  fi
   echo "  output:    $REVIEW_FILE"
   exit 0
 fi

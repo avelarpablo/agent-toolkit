@@ -28,17 +28,33 @@ sections that have real content from project inspection. Omit empty sections.
 - `docs/`: documentation
 ```
 
-For monorepos:
+For monorepos (peer projects):
 
 ```markdown
 ## Repository map
 
-- `apps/admin-web`: internal React application
-- `apps/public-api`: customer-facing API
+- `apps/admin-web`: internal React application — see `apps/admin-web/AGENTS.md`
+- `apps/public-api`: customer-facing API — see `apps/public-api/AGENTS.md`
 - `packages/contracts`: shared API types
 - `packages/database`: persistence utilities
 
 Read the nearest nested `AGENTS.md` before modifying a project or package.
+```
+
+For monorepos (primary project at root + child projects):
+
+```markdown
+## Repository type
+
+Multi-project monorepo. The web app lives at root; child projects have
+their own build systems and conventions.
+
+- **Web app** (root) — {{description}}. This is the primary project.
+- **Core library** (`core/`) — {{description}}. See `core/AGENTS.md`.
+- **Desktop app** (`desktop/`) — {{description}}. See `desktop/AGENTS.md`.
+
+Shared concerns (database schema, deployment, documentation) live at the
+root. Each project has its own build commands and conventions.
 ```
 
 ### Tech stack
@@ -147,6 +163,40 @@ Read the relevant file in `.agents/standards/` before writing code:
 - Database work: `.agents/standards/database.md`
 - Security-sensitive code: `.agents/standards/security.md`
 - Writing tests: `.agents/standards/testing.md`
+```
+
+For monorepos with stack subdirectories:
+
+```markdown
+## Coding standards
+
+Read the relevant file in `.agents/standards/` before writing code:
+
+**Shared (all projects):**
+- General principles and patterns: `.agents/standards/code.md`
+- Security: `.agents/standards/security.md`
+- Testing: `.agents/standards/testing.md`
+
+**Web app (root):**
+- UI components: `.agents/standards/web/components.md`
+- Database work: `.agents/standards/web/database.md`
+
+**Rust projects (core/, tray/):**
+- Rust conventions: `.agents/standards/rust/conventions.md`
+- Tauri patterns: `.agents/standards/rust/tauri.md` (tray only)
+```
+
+In nested project `AGENTS.md` files, reference shared standards by
+relative path:
+
+```markdown
+## Coding standards
+
+Read shared standards before writing code in this project:
+
+- General principles: `../.agents/standards/code.md`
+- Rust conventions: `../.agents/standards/rust/conventions.md`
+- Testing: `../.agents/standards/testing.md`
 ```
 
 ### Documentation

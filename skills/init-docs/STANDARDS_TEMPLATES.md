@@ -359,6 +359,71 @@ Security conventions for this project.
 - Do not install packages with known vulnerabilities.
 ```
 
+## rust/conventions.md — when Rust detected (shared across Rust projects)
+
+```markdown
+# Rust conventions
+
+Shared Rust conventions for all Rust projects in this repository.
+
+## Error handling
+
+- Functions return `anyhow::Result<T>` for application code.
+- Use `thiserror` for library error types that cross API boundaries.
+- Propagate errors with `?` — avoid `.unwrap()` except in tests.
+- Error messages in {{customer-facing language — e.g., English, Spanish}}.
+
+## Naming
+
+- **Crates:** `kebab-case` in `Cargo.toml`, `snake_case` in code.
+- **Modules:** `snake_case`, one file per module.
+- **Types:** `PascalCase` for structs, enums, traits.
+- **Functions:** `snake_case`. Prefix with verb: `create_`, `get_`, `is_`.
+- **Constants:** `SCREAMING_SNAKE_CASE`.
+
+## Patterns
+
+<!-- DETECTED: populate from project inspection -->
+
+### Async
+
+{{Adapted to detected async runtime. Examples:
+  - "Use tokio as the async runtime. Mark async functions explicitly."
+  - "No async — pure synchronous library."
+  Omit if not detected.}}
+
+### Testing
+
+- Tests live in `#[cfg(test)] mod tests` inside each module.
+- Use `tempfile` for filesystem tests.
+- Test names describe behavior: `fn restores_backup_after_failed_update`.
+
+## Project-specific patterns
+
+<!-- DETECTED: populate from Cargo.toml dependencies and code inspection -->
+
+{{Document recurring patterns shared across Rust projects. Examples:
+  - "Docker interactions go through docker.rs, never called directly."
+  - "Progress reporting uses callbacks, not terminal output."
+  Omit if no cross-project patterns are detectable.}}
+```
+
+## Stack-specific standards — when to create
+
+Create a stack subdirectory (`web/`, `rust/`, `python/`, etc.) when:
+
+1. The repo has **two or more projects using different tech stacks**.
+2. An existing flat standard (e.g., `components.md`) would need
+   **materially different content** for different projects.
+3. A convention is shared by **multiple projects of the same stack**
+   but not all projects in the repo.
+
+Do NOT create stack subdirectories for single-stack repos — keep
+standards flat. Do NOT create a subdirectory for a single file — if
+only one standard is stack-specific, keep it flat with a clear name
+(e.g., `rust-conventions.md`). The subdirectory pattern pays off at
+two or more files per stack.
+
 ## What NOT to put in standards
 
 - Content that belongs in `AGENTS.md` (repo map, tech stack, commands).

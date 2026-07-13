@@ -39,6 +39,15 @@ sync-docs a complete structure to maintain over time.
 | `DESIGN.md` | UI framework detected |
 | `REFERENCES.md` | External references or ported patterns detected |
 
+### Produced in monorepos (per workspace member)
+
+| File | Created when |
+|------|-------------|
+| `{project}/AGENTS.md` | Project is independently buildable with its own stack/commands |
+| `{project}/DECISIONS.md` | Project has architecture decisions distinct from root |
+| `{project}/CONTEXT.md` | Project has its own domain terminology distinct from root (rare) |
+| `.agents/standards/{stack}/*.md` | Multiple stacks detected across projects (see [Layered standards](#layered-standards)) |
+
 ## Workflow
 
 ### Phase 1 — Inspect the project
@@ -58,7 +67,20 @@ Before asking the user anything, gather evidence:
    `.cursor/rules/`, `GEMINI.md`, `.github/copilot-instructions.md`.
 7. **Detect project characteristics**: monorepo vs single project, language,
    framework, test runner, linter, formatter, deployment target.
-8. **Detect GitHub repo**: check if the project has a GitHub remote. If so,
+8. **Detect workspace structure** (monorepo detection): check for workspace
+   indicators — `[workspace]` in `Cargo.toml`, `workspaces` in
+   `package.json`, `pnpm-workspace.yaml`, `lerna.json`, `nx.json`, or
+   `turbo.json`. For each workspace member, record:
+   - Directory path and project name
+   - Tech stack (language, framework — may differ from root)
+   - Whether it is independently buildable/testable
+   - Existing nested `AGENTS.md` or documentation
+   Classify each member as one of: **app** (deployable), **library**
+   (consumed by other members), or **tool** (build/dev tooling).
+   Recurse one level only — if a workspace member is itself a workspace,
+   treat its members as peers of the top-level members rather than
+   nesting further.
+9. **Detect GitHub repo**: check if the project has a GitHub remote. If so,
    verify that `tech-debt` and `wishlist` labels exist; note if they need
    to be created.
 
@@ -94,6 +116,22 @@ the response before continuing.
   REFERENCES.md)
 - **Documentation needs**: anything the team wishes was documented but
   isn't? Any decisions that should be recorded as ADRs?
+
+**Monorepo-specific areas** (when workspace detected):
+
+- **Project relationships**: which projects depend on which? Is there a
+  primary project or are they peers? (informs AGENTS.md structure)
+- **Shared vs project-specific conventions**: do all projects follow the
+  same coding standards, or do different stacks need different guidance?
+  (informs standards organization)
+- **Shared vs project-specific documentation**: are architecture decisions
+  system-wide or scoped to individual projects? (informs where DECISIONS.md
+  and CONTEXT.md live)
+- **Stack directory naming**: the default convention names stack
+  subdirectories under `.agents/standards/` after the language or runtime
+  (`web/`, `rust/`, `python/`). If any workspace member directory shares a
+  name with a stack (e.g., a project called `web/`), ask the user what
+  naming convention to use for standards subdirectories to avoid confusion.
 
 Keep the grill focused. Stop when you have enough signal to generate
 project-specific content rather than generic boilerplate. 3–8 questions
@@ -151,6 +189,76 @@ to the project's specific conventions and terminology. Other skills
 gh label create tech-debt --description "Technical debt to address" --color "D93F0B" --force
 gh label create wishlist --description "Ideas and nice-to-haves" --color "0E8A16" --force
 ```
+
+#### Monorepo — layered standards and per-project files {#layered-standards}
+
+When multiple tech stacks are detected across workspace members, organize
+standards using **stack subdirectories** under `.agents/standards/`:
+
+```
+.agents/standards/
+  code.md              ← universal (applies to all projects)
+  security.md          ← universal
+  testing.md           ← universal
+  web/                 ← stack-specific (React/Vue/Svelte projects)
+    components.md
+    database.md
+  rust/                ← stack-specific (Rust projects)
+    conventions.md
+    tauri.md           ← framework-specific within a stack
+  python/              ← stack-specific (Python projects)
+    conventions.md
+```
+
+**Rules for organizing standards:**
+
+- A standard that applies to **all projects** stays at the root level
+  (`code.md`, `security.md`, `testing.md`).
+- A standard specific to **one tech stack** goes in a stack subdirectory
+  named after the language or runtime (`web/`, `rust/`, `python/`).
+- A standard specific to **one framework within a stack** goes in the
+  stack subdirectory with a descriptive name (`rust/tauri.md`).
+- If a standard is shared by **two or more but not all** projects of the
+  same stack, it goes in the stack subdirectory (e.g., `rust/conventions.md`
+  shared by a core library and a tray app that both use Rust).
+- Default to naming stack subdirectories after the language or runtime
+  (`web/`, `rust/`, `python/`). Use `web/` for TypeScript/JavaScript
+  frontend stacks rather than `typescript/`. If a workspace member
+  directory shares a name with a stack default (e.g., a project called
+  `web/`), use the naming convention agreed during the grill phase.
+
+**Per-project files:** each independently buildable workspace member gets:
+
+- **`{project}/AGENTS.md`** — project-specific repo map, tech stack,
+  commands, constraints, and verification steps. References shared
+  standards by relative path (e.g., `../.agents/standards/rust/conventions.md`).
+  Does NOT duplicate content from the root `AGENTS.md`.
+- **`{project}/DECISIONS.md`** — architecture decisions scoped to that
+  project. Only created when there are decisions that don't belong in the
+  root-level `docs/adr/` or `docs/DECISIONS.md`.
+
+**Root AGENTS.md in monorepos:** acts as both monorepo orchestrator AND
+primary project documentation when one project lives at root. Structure:
+
+1. Repository type and overview (monorepo)
+2. Repository map (all projects with pointers to nested AGENTS.md)
+3. Primary project sections (if one lives at root): tech stack, commands,
+   constraints, verification
+4. Coding standards (points to `.agents/standards/`)
+5. Documentation (points to shared docs)
+
+Each project's `AGENTS.md` then says: "Read shared standards X, Y, Z"
+(by relative path) plus any project-specific conventions inline or in
+its own standards files.
+
+**Shared documentation stays at root:**
+
+| File | Scope |
+|------|-------|
+| `docs/CODEMAP.md` | Full repo map (all projects) |
+| `docs/DEPLOYMENT.md` | System-wide deployment (all artifacts) |
+| `CONTEXT.md` or `docs/CONTEXT.md` | Domain/business context (shared) |
+| `docs/adr/` | System-wide architecture decisions |
 
 Present all generated files to the user. Explain:
 - What was auto-detected and from where

@@ -180,19 +180,73 @@ that was ported from one of these sources.
   original — e.g., "when modifying the data table component"}}
 ```
 
-## Module-level documentation
+## Per-project documentation (monorepos)
 
-In monorepos or projects with distinct modules, documentation files can
-live alongside the module's `AGENTS.md`:
+In monorepos, each independently buildable project can have its own
+documentation files alongside its `AGENTS.md`. The key question for each
+doc type: **is this concern shared or project-scoped?**
+
+### What stays at root (shared)
+
+| File | Why shared |
+|------|------------|
+| `docs/CODEMAP.md` | Maps the entire repo — all projects need to appear here |
+| `docs/DEPLOYMENT.md` | Deployment covers how all pieces ship together |
+| `CONTEXT.md` | Domain/business context applies to the whole system |
+| `DESIGN.md` | Design system for the primary UI (if one exists) |
+| `REFERENCES.md` | External references used by the primary project |
+| `docs/adr/` | System-wide architecture decisions |
+
+### What lives per-project
+
+| File | When to create |
+|------|----------------|
+| `{project}/DECISIONS.md` | Project has architecture decisions that don't belong in root ADRs — e.g., "why we chose Tauri 2 over Electron" doesn't belong next to "why subcategories have a parent FK" |
+| `{project}/CONTEXT.md` | Project has its own domain terminology distinct from root — rare, usually only for large modules with separate business domains |
+| `{project}/DESIGN.md` | Project has its own UI with a different design system from root |
+
+### Per-project DECISIONS.md format
+
+```markdown
+# {{Project name}} — Architecture decisions
+
+Decisions specific to this project. For system-wide decisions, see
+`docs/adr/` at the repository root.
+
+## D-001: {{Title}}
+
+**Choice:** {{What was decided.}}
+
+**Rationale:** {{Why this choice over alternatives.}}
+
+**Rejected:** {{What was considered and rejected.}}
+```
+
+Use the same ADR format as root (`docs/adr/`) but with a simpler
+numbering scheme (D-001, D-002) since these are typically fewer and
+more focused. Reference root ADRs when a project decision builds on
+a system-wide one.
+
+### Directory structure example
 
 ```
-apps/my-app/
-├── AGENTS.md          # References module-level docs
-├── CONTEXT.md         # Domain context specific to this module
-└── docs/
-    └── adr/           # Decisions specific to this module
+my-monorepo/
+├── AGENTS.md              # Monorepo root + primary project
+├── CONTEXT.md             # Shared domain context
+├── DESIGN.md              # Primary project design system
+├── docs/
+│   ├── CODEMAP.md         # Full repo map
+│   ├── DEPLOYMENT.md      # System-wide deployment
+│   └── adr/               # System-wide decisions
+├── core/
+│   ├── AGENTS.md          # Core library guidance
+│   └── DECISIONS.md       # Core-specific decisions
+└── desktop/
+    ├── AGENTS.md          # Desktop app guidance
+    ├── DECISIONS.md       # Desktop-specific decisions
+    └── DESIGN.md          # Desktop UI (different from web)
 ```
 
-The module's `AGENTS.md` references these docs in its Documentation
-section. Root-level `AGENTS.md` should not duplicate module-level
+The project's `AGENTS.md` references its own docs in its Documentation
+section. Root-level `AGENTS.md` should not duplicate project-level
 documentation — reference by path or let the nested `AGENTS.md` handle it.

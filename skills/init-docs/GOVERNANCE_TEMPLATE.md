@@ -74,11 +74,17 @@ can use.
 .agents/
 ├── governance.md          # This file
 ├── standards/             # Coding and architecture standards (source of truth)
-│   ├── code.md            # Language, patterns, principles
-│   ├── components.md      # UI component conventions (if applicable)
-│   ├── database.md        # DB naming, migrations, data handling (if applicable)
-│   ├── security.md        # Auth, access control, sensitive data (if applicable)
-│   └── testing.md         # Testing philosophy and requirements (if applicable)
+│   ├── code.md            # Language, patterns, principles (universal)
+│   ├── security.md        # Auth, access control, sensitive data (universal)
+│   ├── testing.md         # Testing philosophy and requirements (universal)
+│   ├── components.md      # UI component conventions (single-stack repos)
+│   ├── database.md        # DB naming, migrations (single-stack repos)
+│   ├── web/               # Stack-specific (monorepos with multiple stacks)
+│   │   ├── components.md  # UI component conventions
+│   │   └── database.md    # DB conventions for the web stack
+│   └── rust/              # Stack-specific
+│       ├── conventions.md # Shared Rust conventions
+│       └── tauri.md       # Framework-specific within Rust stack
 └── templates/             # Project-adapted documentation templates
     ├── adr.md             # ADR format for this project
     ├── context.md         # CONTEXT.md format for this project
@@ -92,6 +98,13 @@ files are created when the project has the relevant concern (UI components,
 database, security, testing). Each file should cover one concern, stay under
 150 lines, and document only conventions not obvious from the code itself.
 Add new files as concerns emerge rather than expanding existing ones.
+
+**Stack subdirectories** (e.g., `web/`, `rust/`, `python/`) are used in
+monorepos where workspace members use different tech stacks. In single-stack
+repos, standards stay flat at the root level. The rule: use subdirectories
+when the same concern (e.g., "component conventions") would need materially
+different guidance for different projects. See the init-docs skill for the
+full organization rules.
 
 Templates in `.agents/templates/` are project-adapted versions of
 documentation formats. Skills that create documentation (sync-docs,
@@ -227,9 +240,11 @@ This section maps the generic principles above to this repository's actual
 structure. Update it as the agentic file structure evolves.
 
 - **Root `AGENTS.md`:** {{describe scope — e.g., "covers the entire app" or
-  "covers the monorepo root; nested files exist in apps/"}}
+  "covers the monorepo root + primary project; nested files exist for
+  child projects"}}
 - **`.agents/standards/`:** {{list files that exist — at minimum code.md;
-  list others if created during init}}
+  list others if created during init. For monorepos with stack subdirs,
+  list the directory structure.}}
 - **`.agents/templates/`:** {{list template files that exist}}
 - **`.claude/rules/`:** {{list files if they exist, or "not yet created —
   add when standards need path-matching"}}
@@ -237,6 +252,35 @@ structure. Update it as the agentic file structure evolves.
   DESIGN.md, REFERENCES.md — describe what has content vs skeleton-only}}
 - **Issue tracking:** {{describe label setup — e.g., "tech-debt and wishlist
   labels created on GitHub"}}
+
+<!--
+  CONDITIONAL: include this subsection only for monorepos with nested
+  project files. Omit entirely for single-project repos.
+-->
+
+### Per-project mapping
+
+For each workspace member with its own agentic files:
+
+- **`{project}/AGENTS.md`:** {{describe scope — what it covers, which
+  shared standards it references}}
+- **`{project}/DECISIONS.md`:** {{exists / not yet created — describe
+  what kinds of decisions belong here vs root}}
+- **`{project}/CONTEXT.md`:** {{exists / not yet created — only when
+  project has its own domain terminology distinct from root}}
+
+Example:
+
+```
+- **`core/AGENTS.md`:** Rust library crate. References shared standards
+  code.md, testing.md, and rust/conventions.md.
+- **`core/DECISIONS.md`:** Library refactor rationale, API design choices.
+- **`tray/AGENTS.md`:** Tauri desktop app. References shared standards
+  code.md, testing.md, rust/conventions.md, and rust/tauri.md.
+- **`tray/DECISIONS.md`:** Tauri 2 choice, auto-update strategy, tray UX.
+```
+
+<!-- END CONDITIONAL -->
 
 ---
 

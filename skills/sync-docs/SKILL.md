@@ -26,11 +26,15 @@ Read `.agents/governance.md` to understand:
 2. **Last sync state** — the sync metadata section has `last-synced` and
    `last-synced-commit` fields.
 3. **Template locations** — `.agents/templates/` for documentation formats.
+4. **Multi-project structure** — if the per-project mapping subsection
+   exists, record which workspace members have their own `AGENTS.md`,
+   `DECISIONS.md`, or other project-scoped documentation. Also check for
+   stack subdirectories under `.agents/standards/` (e.g., `web/`, `rust/`).
 
 Validate the manifest against the filesystem: check that every file listed
-actually exists. If files are missing, note the discrepancy — it may
-indicate deleted files that should be removed from the manifest, or files
-that were never created.
+actually exists — including per-project files and stack subdirectories. If
+files are missing, note the discrepancy — it may indicate deleted files
+that should be removed from the manifest, or files that were never created.
 
 ### Phase 2 — Detect changes
 
@@ -55,6 +59,8 @@ Look for:
 - Changes to project structure
 - New patterns emerging (repeated similar changes)
 - Configuration changes (linters, formatters, CI)
+- Changes scoped to a specific workspace member (for routing proposals
+  to the correct project docs — see Phase 3)
 
 **Conversation context** (when available):
 
@@ -93,16 +99,53 @@ categories with no relevant changes.
 | Database standards | `.agents/standards/database.md` | Schema changes, new query patterns, migration patterns |
 | Component standards | `.agents/standards/components.md` | New component categories, UI patterns |
 | Security standards | `.agents/standards/security.md` | Auth changes, new security constraints |
+| Stack-specific standards | `.agents/standards/{stack}/*.md` | Changes to stack-specific conventions |
 | Domain context | `CONTEXT.md` | New domain terms, business rules, entity changes |
 | Architecture decisions | `docs/adr/` | Decisions made during development that meet ADR criteria |
 | Design system | `DESIGN.md` | New visual patterns, tokens, layout changes |
 | External references | `REFERENCES.md` | New external sources consulted or patterns ported |
 | Governance | `.agents/governance.md` | Structural changes to the knowledge file setup |
+| Per-project agent instructions | `{project}/AGENTS.md` | Project-specific commands, repo map, tech stack changes |
+| Per-project decisions | `{project}/DECISIONS.md` | Project-scoped architecture decisions |
 
 **For standards files that don't exist yet:** if changes suggest a new
 concern is now relevant (e.g., first database dependency added, first UI
 component created), propose creating the file. Reference the templates
 in `.agents/templates/` or fall back to the init-docs bundled templates.
+
+#### Multi-project routing (monorepos)
+
+When the governance manifest lists per-project files, route proposals to
+the correct scope based on which files changed:
+
+1. **Classify each changed file by project.** Use the workspace member
+   paths from the manifest (e.g., changes under `core/` belong to the
+   core project, changes under `tray/` belong to the tray project,
+   changes at root belong to the root/primary project).
+
+2. **Route to the narrowest applicable scope:**
+   - A change to `tray/src-tauri/src/commands.rs` → propose updates to
+     `tray/AGENTS.md` (repo map, commands) not root `AGENTS.md`.
+   - A change to `core/src/backup.rs` → propose updates to
+     `core/AGENTS.md` and possibly `core/DECISIONS.md`.
+   - A change to `schema.sql` or `src/` at root → propose updates to
+     root `AGENTS.md` and root-level standards.
+   - A change to `.github/workflows/` or `docker/` → propose updates
+     to root-level docs (`docs/DEPLOYMENT.md`, `docs/CODEMAP.md`).
+
+3. **Standards routing:** match changed files to the correct standards
+   file based on stack. If stack subdirectories exist:
+   - Changes to `.rs` files in `core/` or `tray/` → check
+     `.agents/standards/rust/conventions.md`
+   - Changes to `.tsx`/`.ts` files at root → check
+     `.agents/standards/web/components.md` or `web/database.md`
+   - Changes that affect all projects → check shared standards
+     (`code.md`, `security.md`, `testing.md`)
+
+4. **Propose new per-project files** when a workspace member has
+   significant new patterns or decisions but no project-scoped docs yet.
+   Criteria: the project has its own `AGENTS.md` (per governance) but
+   the proposal doesn't fit in root docs and no project-level doc exists.
 
 **For each proposal, present:**
 

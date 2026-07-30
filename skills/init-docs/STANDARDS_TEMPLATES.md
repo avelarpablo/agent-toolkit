@@ -359,6 +359,277 @@ Security conventions for this project.
 - Do not install packages with known vulnerabilities.
 ```
 
+## observability.md — when logging is present (most projects)
+
+Shared standard, not web-only. Applies to server and client code alike.
+
+```markdown
+# Observability standards
+
+How this project emits logs and diagnostic events.
+
+## Log through a facade
+
+Never call `console.*` or a logging library directly in feature code. Route
+all logging through a single logger facade so format, levels, and
+destinations stay swappable.
+
+## Structured, by event code
+
+Emit structured records (JSON) keyed by a stable event code, not free-text
+prose. A record carries `code`, `level`, and a typed payload. Event codes
+are greppable and survive message-wording changes.
+
+## Levels
+
+Use a small fixed set: `debug`, `info`, `warn`, `error`. Reserve `error`
+for conditions that need attention.
+
+## Server and client
+
+The same facade shape exists on both sides. Client logs forward to the
+server transport. Never log secrets or personal data from either side.
+
+<!-- DETECTED: name the actual logger module/path and event-code registry
+     if one exists. Omit sections that do not apply. -->
+```
+
+## ci-cd.md — when CI config (`.github/workflows`) or deployment present
+
+```markdown
+# CI/CD standards
+
+How this project builds, tests, and releases.
+
+## Delivery targets
+
+<!-- DETECTED: list the actual release targets. -->
+
+{{Describe each independent delivery target. Example: a cloud/web deploy and
+  a local/desktop artifact, released on separate version tags (e.g.,
+  `web-v*` and `local-v*`) so one channel never blocks the other.}}
+
+## The quality gate (non-negotiable)
+
+A single test gate must pass before ANY channel publishes. No release —
+cloud or local — ships on red. The gate runs the full suite (unit,
+integration, E2E) and blocks publishing on failure.
+
+## Release channels
+
+Each channel is triggered by its own tag/branch pattern and is
+independently gated by the shared test gate.
+
+## Migrations & secrets
+
+<!-- DETECTED: document how DB migrations run in CI and where secrets come
+     from. Omit if not applicable. -->
+```
+
+## web/actions.md — when Next.js App Router / server-first web app detected
+
+```markdown
+# Server action standards
+
+Conventions for server actions in a server-first {{framework}} app. Read
+`.agents/standards/code.md` and `web/components.md` first.
+
+## Server-first data flow
+
+Fetch and mutate on the server. Server components read data directly;
+mutations go through server actions, not client-side fetches to API routes.
+
+## The `FormActionResult<T>` contract
+
+Every form-bound action returns a single discriminated result — success with
+data, or failure with an error code and optional field errors — and never
+throws to the client.
+
+## The `withFormAction` wrapper
+
+Wrap action bodies in a shared `withFormAction` helper that validates input
+(Zod), invokes the service layer, maps errors to codes, and returns the
+`FormActionResult`. Keeps every action uniform.
+
+## Revalidation
+
+After a successful mutation, revalidate affected data with `revalidateTag`
+(tag-based) rather than blanket path revalidation.
+
+## Client integration
+
+Bind actions in the client with a `useServerFormAction` hook exposing
+pending state, result data, and field/global errors.
+
+## Actions vs API routes
+
+Default to server actions for app-internal mutations. Reserve API routes for
+third-party callers, webhooks, and non-form GET endpoints.
+
+<!-- DETECTED: reference the actual helper/hook module paths and the
+     per-feature co-located `actions.ts` layout. -->
+```
+
+## web/errors.md — when server-first web app detected
+
+```markdown
+# Error handling standards
+
+How errors travel from server to UI. Read `web/actions.md` first.
+
+## The server returns codes, not strings
+
+Server code fails with a typed `ActionError` carrying a stable `code` (and
+optional interpolation detail), never a user-facing sentence. The client
+owns wording, so messages can be localized and reworded freely.
+
+## Per-feature `errors.ts`
+
+Each feature declares its error codes in a co-located `errors.ts`, namespaced
+by feature. Zod validation failures map into the same `ActionError` shape.
+
+## `resolveError` on the client
+
+The client maps a `code` to display text via a `resolveError` resolver
+(localized), with `{detail}` interpolation for dynamic parts. Field errors
+attach to their corresponding form fields.
+
+## Route-level errors
+
+Use framework `error.tsx` and `not-found.tsx` boundaries for render/route
+failures. Log the real cause server-side; show the resolved message
+client-side.
+
+<!-- DETECTED: reference the actual ActionError type and error-code registry
+     paths. -->
+```
+
+## web/i18n.md — when user-facing web app detected
+
+```markdown
+# Localization standards
+
+How user-facing text is defined and resolved.
+
+## No user-facing strings in logic
+
+Application and server logic never contain literal user-facing strings. They
+reference keys; text lives in locale maps.
+
+## Central + feature-colocated locale maps
+
+Shared/common text lives in a central locale map; feature-specific text lives
+in locale maps co-located with the feature. Both feed one resolver.
+
+## The `t()` resolver
+
+Resolve keys to text through a single `t()` function with `{placeholder}`
+interpolation. No heavyweight i18n framework — a typed key→string map plus
+the resolver.
+
+## What must be localized
+
+All labels, messages, empty states, and error text (see `web/errors.md`).
+Log messages and event codes are NOT localized.
+
+<!-- DETECTED: name the locale-map module paths and active-locale
+     mechanism. -->
+```
+
+## web/a11y.md — when user-facing web UI detected
+
+```markdown
+# Accessibility standards
+
+## Target vs mandatory
+
+Target WCAG 2.1 AA across the UI. A programmatically-testable subset is
+**mandatory** and enforced in CI; the rest is reviewed but not blocking.
+
+## Free from the primitives
+
+Use accessible UI primitives (Radix-style) so roles, focus management, and
+keyboard interaction come for free. Do not re-implement interactive widgets
+from raw divs.
+
+## Mandatory checklist
+
+The enforced subset includes: no axe violations, labelled form controls,
+sufficient color contrast, keyboard operability, and visible focus.
+
+## Enforcement
+
+Automated a11y checks run in E2E via `@axe-core/playwright` and fail the
+build on violations in the mandatory subset.
+
+<!-- DETECTED: reference the axe integration in the test setup. -->
+```
+
+## web/auth.md — when auth detected OR internet-facing user app
+
+```markdown
+# Authentication standards
+
+<!-- DETECTED: adapt to the actual auth implementation. If no auth exists
+     yet but the app is internet-facing, add the NOT YET IMPLEMENTED comment
+     and treat this as the target design. -->
+
+## Credential tiers
+
+Support layered credentials: a primary password, a fast-unlock PIN, and
+optional WebAuthn/biometrics. Each tier has distinct strength and use.
+
+## Step-up
+
+Sensitive operations require step-up re-authentication beyond an active
+session.
+
+## Recovery
+
+Issue a one-time recovery key at enrollment for account recovery; never
+recover by weakening a credential.
+
+## Sessions
+
+Server-managed sessions in httpOnly cookies with expiry and rotation.
+Protect all non-public routes; validate the session server-side.
+
+<!-- DETECTED: name the auth module, session store, and route-protection
+     mechanism. -->
+```
+
+## web/navigation.md — when web UI with navigation detected
+
+```markdown
+# Navigation standards
+
+Read `web/components.md` first.
+
+## Two shells
+
+Pick one navigation shell per app:
+- **SimpleShell** — a few flat destinations.
+- **SectionedShell** — apps with hierarchical depth (sections + entities).
+
+## Dual desktop/mobile via CSS breakpoints
+
+One component tree renders both desktop and mobile layouts, switched by CSS
+breakpoints — not separate route trees or JS user-agent branching. Desktop
+has no global top bar; navigation lives in a sidebar axis.
+
+## Shared primitives
+
+Provide a command palette and a dedicated search page for fast navigation.
+Present collections with a `DataList` component rather than raw `<table>`
+markup.
+
+## Touch targets and a11y
+
+Meet minimum touch-target sizes and follow `web/a11y.md`.
+
+<!-- DETECTED: reference the actual shell components and DataList path. -->
+```
+
 ## rust/conventions.md — when Rust detected (shared across Rust projects)
 
 ```markdown

@@ -77,11 +77,19 @@ can use.
 │   ├── code.md            # Language, patterns, principles (universal)
 │   ├── security.md        # Auth, access control, sensitive data (universal)
 │   ├── testing.md         # Testing philosophy and requirements (universal)
+│   ├── observability.md   # Logger facade, structured event codes (universal)
+│   ├── ci-cd.md           # Release channels, mandatory test gate (universal)
 │   ├── components.md      # UI component conventions (single-stack repos)
 │   ├── database.md        # DB naming, migrations (single-stack repos)
 │   ├── web/               # Stack-specific (monorepos with multiple stacks)
 │   │   ├── components.md  # UI component conventions
-│   │   └── database.md    # DB conventions for the web stack
+│   │   ├── database.md    # DB conventions for the web stack
+│   │   ├── actions.md     # Server actions (server-first apps)
+│   │   ├── errors.md      # Error codes and client resolution
+│   │   ├── i18n.md        # Localization: locale maps + t() resolver
+│   │   ├── a11y.md        # Accessibility: WCAG 2.1 AA, axe in CI
+│   │   ├── auth.md        # Authentication: credentials, sessions, step-up
+│   │   └── navigation.md  # Navigation shells, command palette, DataList
 │   └── rust/              # Stack-specific
 │       ├── conventions.md # Shared Rust conventions
 │       └── tauri.md       # Framework-specific within Rust stack

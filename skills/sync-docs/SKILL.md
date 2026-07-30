@@ -99,6 +99,14 @@ categories with no relevant changes.
 | Database standards | `.agents/standards/database.md` | Schema changes, new query patterns, migration patterns |
 | Component standards | `.agents/standards/components.md` | New component categories, UI patterns |
 | Security standards | `.agents/standards/security.md` | Auth changes, new security constraints |
+| Observability standards | `.agents/standards/observability.md` | New logger facade usage, event codes, log destinations |
+| CI/CD standards | `.agents/standards/ci-cd.md` | New/changed release channels, test-gate changes, migration/secret handling in CI |
+| Server action standards | `.agents/standards/web/actions.md` | New/changed server actions, `FormActionResult`/`withFormAction` patterns, revalidation |
+| Error handling standards | `.agents/standards/web/errors.md` | New `ActionError` codes, per-feature `errors.ts`, resolver/boundary changes |
+| Localization standards | `.agents/standards/web/i18n.md` | New locale maps/keys, resolver or interpolation changes |
+| Accessibility standards | `.agents/standards/web/a11y.md` | New a11y requirements, axe checks, mandatory-subset changes |
+| Authentication standards | `.agents/standards/web/auth.md` | New credential tiers, session/step-up/recovery changes, route protection |
+| Navigation standards | `.agents/standards/web/navigation.md` | New nav shell, command palette/search, DataList usage |
 | Stack-specific standards | `.agents/standards/{stack}/*.md` | Changes to stack-specific conventions |
 | Domain context | `CONTEXT.md` | New domain terms, business rules, entity changes |
 | Architecture decisions | `docs/adr/` | Decisions made during development that meet ADR criteria |

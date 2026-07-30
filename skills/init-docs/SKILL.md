@@ -36,6 +36,14 @@ sync-docs a complete structure to maintain over time.
 | `.agents/standards/database.md` | Database dependency or ORM detected |
 | `.agents/standards/components.md` | UI framework detected (React, Vue, Svelte, etc.) |
 | `.agents/standards/security.md` | User-facing app or data sensitivity concerns detected |
+| `.agents/standards/observability.md` | Always/most projects — any logging or diagnostic output present |
+| `.agents/standards/ci-cd.md` | CI config (`.github/workflows`) or a deployment target present |
+| `.agents/standards/web/actions.md` | Next.js App Router / server-first web app detected |
+| `.agents/standards/web/errors.md` | Server-first web app detected |
+| `.agents/standards/web/i18n.md` | User-facing web app detected |
+| `.agents/standards/web/a11y.md` | User-facing web UI detected |
+| `.agents/standards/web/auth.md` | Auth detected OR internet-facing user app |
+| `.agents/standards/web/navigation.md` | Web UI with navigation detected |
 | `DESIGN.md` | UI framework detected |
 | `REFERENCES.md` | External references or ported patterns detected |
 
@@ -200,9 +208,17 @@ standards using **stack subdirectories** under `.agents/standards/`:
   code.md              ← universal (applies to all projects)
   security.md          ← universal
   testing.md           ← universal
+  observability.md     ← universal (logging facade, structured events)
+  ci-cd.md             ← universal (release channels, test gate)
   web/                 ← stack-specific (React/Vue/Svelte projects)
     components.md
     database.md
+    actions.md         ← server actions (server-first apps)
+    errors.md          ← error codes / resolution
+    i18n.md            ← localization
+    a11y.md            ← accessibility
+    auth.md            ← authentication
+    navigation.md      ← navigation shells + DataList
   rust/                ← stack-specific (Rust projects)
     conventions.md
     tauri.md           ← framework-specific within a stack

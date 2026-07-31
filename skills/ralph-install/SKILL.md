@@ -47,6 +47,13 @@ Ask only what cannot be inferred. Use AskUserQuestion. Adaptive — skip questio
 - Map each zone to dir + Claude dir + Codex dir + gh dir/host
 - Answers generate `~/.ralph/accounts.toml` entries
 - Example: `~/work-repos/` -> work (`~/.claude`, `~/.codex`, `gh_host=github.example.com`)
+- **Full recipe:** for isolated gh + Claude config dirs, path-based auto-routing
+  (ralph + manual terminal), and the keychain gotchas (gh token-by-account vs
+  Claude's sha256-namespaced legacy-vs-hashed slot, same-account refresh race),
+  see [`runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../runners/ralph/MULTI_ACCOUNT_SETUP.md).
+  The idempotent [`runners/ralph/setup-multi-account.sh`](../../runners/ralph/setup-multi-account.sh)
+  provisions all of it (edit its `ACCOUNTS` array) — prefer running/adapting it
+  over hand-writing `accounts.toml` when the user wants multi-account.
 
 **Q3 — API config** (only if user has corporate Claude gateway, e.g. internal API key helper):
 - Default: standard Anthropic API (no `apiKeyHelper`, no `ANTHROPIC_BASE_URL`)

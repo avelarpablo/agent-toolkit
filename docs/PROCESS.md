@@ -484,6 +484,85 @@ creates/destroys worktrees.
 
 ---
 
+## Build inventory _(draft)_
+
+The bridge from design to implementation. For each capability: closest existing analog, the call
+(**reuse** as-is / **adapt** / **replace** / **new**), what kind of artifact it is, and notes. Per
+the [reuse philosophy](#the-development-system), naming an existing skill is not a commitment.
+
+**Type key:** 🟦 skill · 🟧 runner · ⬛ script · 📄 doc/template.
+
+### Project lifecycle & knowledge
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Deep product/vision/domain grill + scaffold context | `init-docs` | **adapt** | 🟦 | add the deep product/vision grill layer on top of today's pattern-grill |
+| Maintain docs; feature-level `stage:docs` pass | `sync-docs` | **adapt** | 🟦 | add feature-level mode reading git + verification report + issue tree |
+| `MONITORING.md` (per-project + root-shared) | (none) | **new** (in `init-docs`/`sync-docs`) | 📄 | mirrors the `CONTEXT.md` monorepo hierarchy |
+| Tracker / label / branch vocabulary setup | `setup-agent-skills` | **adapt** | 🟦 | teach it the `stage:` labels + `<type>/<issue#>-<slug>` branch convention |
+| Standards templates | `init-docs/STANDARDS_TEMPLATES.md` | **reuse** | 📄 | already broad; extend as needed |
+
+### Front door & grilling
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Wayfinding: scope triage + map + dispatch | (ref: Matt Pocock wayfinder) | **new** | 🟦 | the universal front door; routes to grill profiles |
+| Grilling **engine** (behavior + checkpointing) | `grill-me` / `grill-verified` / `grill-with-docs` | **replace** | 🟦 | one engine; **retire the three** once it covers them |
+| Grill **profiles** (PRD / Design Doc / Task / ticket) | — | **new** | 📄 | config/prompts parameterizing the engine |
+
+### Document producers
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| PRD producer (what/why + success criteria) | `to-prd` | **adapt** | 🟦 | slim down; strip impl detail; **add success criteria** |
+| Design Doc producer (how, verified, prototype ref) | back half of `to-prd` | **new** | 🟦 | `to-design-doc`; links parent PRD |
+| Slice + implementation-plan producer | `to-vertical-issues` (+ `to-issues`) | **adapt** | 🟦 | align to `feat/`+`slice/` model & `stage:` labels; emit checkbox plan; consider consolidating with `to-issues` |
+
+### Design / prototype
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Prototype (salvage/throwaway, freeze screenshots) | `prototype` | **adapt** | 🟦 | add HITL salvage path in real design system; seed `design/…`→`feat/…`; freeze screenshots to issue |
+
+### Build loops
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Dev loop | `ralph` | **adapt** | 🟧 | worktree/branch config; unit/integ TDD (`tdd` skill as guidance) |
+| Refactor loop = find→fix→recheck | `review-loop` + `ralph` | **reuse** (as chained) | 🟧 | the chaining is orchestrator policy, not a new runner |
+| QA loop (Playwright, e2e, vs prototype) | (none) | **new** | 🟧 | single-agent; the one genuinely new runner |
+| `ralph-dg` | — | (per-project config) | 🟧 | project-specific variant, not core |
+
+### Orchestration & scripts
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Orchestrator pass (advance stages, caps, QA=1) | `ralph-orchestrator` | **adapt** | 🟦 | add stage machine, `feat/` model, concurrency caps |
+| Worktree create/teardown | (none) | **new** | ⬛ | called by orchestrator; ralph never does this |
+| Label flips / stage transitions | (none) | **new** | ⬛ | drive the `stage:` machine |
+| State-aware cleanup (`~/.ralph/builds`, branches) | (none) | **new** | ⬛ | keyed to issue verified/closed |
+
+### Verification, FIC & feedback
+
+| Capability | Closest existing | Call | Type | Notes |
+|---|---|---|---|---|
+| Feature-level verification + report to tracker | `verify-prd` (+ `audit-the-prd`, `close-prd`) | **adapt** | 🟦 | run on `feat/…` worktree; report + findings→linked issues; use PRD success criteria |
+| Shared **FIC primitive** (working file, resume header, checkpoint, resume/compact) | `handoff` (+ `session-keeper` for keep-alive) | **new** | 🟦 | the base every long-running skill inherits; `handoff` **adapts** into the cutover step |
+| General FIC skill | — | **new** | 🟦 | primitive + generic profile; base layer stage skills specialize |
+| Feedback intake | `log` / `triage` / `diagnose` | **reuse/adapt** | 🟦 | align `triage` to the `stage:` labels |
+| Log-fetching skill | — | **new** (later) | 🟦 | resolves nearest `MONITORING.md`; optional/deferred |
+
+### Suggested build order
+
+1. **FIC primitive + general FIC skill** — everything else depends on it (checkpoint discipline).
+2. **Grilling engine + PRD/Design-Doc profiles** + `to-prd`/`to-design-doc` — the design front half.
+3. **Branch/label conventions + worktree & cleanup scripts** — the state-machine substrate.
+4. **Orchestrator pass** + **QA runner** + dev/refactor wiring — the build phase.
+5. **verify-prd adapt** + **sync-docs `stage:docs`** — the tail.
+6. **Wayfinding** wraps the front; **monitoring/log-fetch** and the standing cron come last.
+
+---
+
 ## Open questions
 
 Being grilled into shape. Not final.
@@ -494,12 +573,9 @@ Being grilled into shape. Not final.
    `review-loop` + `ralph`; QA = one new single-agent Playwright runner/skill.
 3. ~~Meta-orchestrator~~ — RESOLVED. Manual pass first; standing loop = same pass on a cron.
 4. ~~Label vocabulary~~ — RESOLVED. `stage:` namespace, on the slice issue.
-5. **Build inventory** *(the last open item)* — a per-capability **decision table** produced once
-   the design settles: `desired capability → closest existing analog → {reuse / adapt /
-   replace-with-new / new} → what to remove`, and for each, whether it's a skill, a runner
-   primitive, or a script. Must at least cover: the **grilling engine + profiles**, the **shared FIC
-   primitive** + **general FIC skill**, `to-prd` / `to-design-doc`, the **QA runner**, the
-   **orchestrator pass**, worktree-lifecycle scripts, and the label/branch conventions.
+5. ~~Build inventory~~ — DRAFTED. See [Build inventory](#build-inventory-draft). Remaining: confirm
+   the reuse/replace calls (esp. retiring the three grills; consolidating `to-issues`/`to-vertical-
+   issues`) and the build order.
 6. ~~`to-prd` fix~~ — RESOLVED. Split into **`to-prd`** (what/why + **success criteria**, no impl
    detail) and a new **`to-design-doc`** (how, verified, references the prototype), each fed by its
    matching grill profile. See [Grilling engine](#grilling-engine--profiles).

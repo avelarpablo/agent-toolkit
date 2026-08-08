@@ -104,6 +104,22 @@ the wayfinder skill — a `wayfinder:map` issue holding Destination, Decisions-s
 Out-of-scope; sharp decisions become child tickets resolved via grilling / prototyping /
 research; fog graduates into tickets as clarity grows.)
 
+**Wayfinding routes to the grill primitives — it does not replace them.** The grill skills are
+reusable primitives (the interrogation); wayfinding is policy (which grill, when, at what scope) —
+the same mechanism/policy split as ralph vs. the orchestrator. Wayfinding owns exactly two things:
+**scope triage** (Task/Feature/Product) and **dispatch** (route each open decision to the right
+grill):
+
+| Grill primitive | Kind of question | Hits real code? | Routed to for |
+|---|---|---|---|
+| `grill-me` | product / "what" | no | PRD, task definition, general design |
+| `grill-with-docs` | domain / terminology, vs `CONTEXT.md` + ADRs | reads docs | sharpening against the knowledge base; triage |
+| `grill-verified` | technical / "how", evidence-first | **yes** | Design Doc & implementation plans |
+
+"Universal front door" is conceptual, not "always run a heavy map." **Product/foggy** → full
+wayfinding (map + dispatch). **Feature** → skip the map; `grill-me` → PRD, later `grill-verified`
+→ Design Doc. **Task** → a brief `grill-me` → one issue. A clear feature never pays the map tax.
+
 **Research & POC are informal feeders, not stages.** Research runs in **subagents** (context
 isolation = FIC) and returns findings into the map/PRD. POCs use the existing `prototype` skill;
 their value is a *decision*, which lands in the PRD or Design Doc.
@@ -122,12 +138,17 @@ code.
                                                                             │
  ───────────────────── build phase (in a worktree) ─────────────────────────┼──────
                                                                             ▼
- Dev loop ──▶ Refactor loop ──▶ QA loop ──▶ Verification ──▶ stage:docs
- Claude↔Codex  structure/       Playwright   human gate on    PRD-level doc
- unit/integ    standards        e2e tests    main, 1 at a     sync after all
- TDD           (review+fix)      + prototype  time; loops      slices verified
-                                 as reference  until clean
+ Dev loop ──▶ Refactor loop ──▶ QA loop ──▶ Verification ──▶ stage:docs ──▶ promote
+ Claude↔Codex  structure/       Playwright   feature-level    feature-level    feat → main
+ unit/integ    standards        e2e tests    on the feat/     sync-docs pass   (deploy
+ TDD           (review+fix)      + prototype  worktree, 1 at   before promote   trigger)
+                                 as reference  a time; loops
+                                               until clean
 ```
+
+Slices run their build loops in parallel worktrees and merge into the **feature integration
+branch** (`feat/…`); verification, docs, and the promote-to-`main` gate happen at the **feature
+level** on that branch. See [Branch naming](#branch-naming).
 
 Grilling appears **twice**, in two flavors: a **product grill** (`grill-me`) decides *what*
 (→ PRD/Task); a **verified grill** (`grill-verified`, checked against the code) decides *how*
@@ -139,16 +160,41 @@ Grilling appears **twice**, in two flavors: a **product grill** (`grill-me`) dec
 criteria, out-of-scope. **No implementation detail** — that goes in the Design Doc. Product grill.
 
 **Design (prototype) — *look & feel*.** Its own step because UI discussion diverges from
-delivered UI. Produces an **approved prototype** (via the `prototype` skill + design skills) that
-is a **binding input**: the Design Doc references it and the QA loop uses it as the visual
-acceptance reference. Has its own human gate — you approve the prototype.
+delivered UI. Runs in a worktree (produces code → main stays pristine). Uses a HITL variant of the
+`prototype` skill + design skills to generate several variations; you approve one at a human gate.
+The approved prototype is a **binding input** — the Design Doc references it and the QA loop uses
+it as the visual acceptance reference.
+
+Two paths, chosen per feature by design-step triage:
+
+- **Salvage (default for UI-meaningful features).** The prototype is built in the project's **real
+  design system / component library** (not a throwaway aesthetic — a throwaway look that gets
+  re-styled is itself a divergence source). On approval it becomes the **dev loop's starting
+  point**: the refactor loop then cleans it to standard, and the QA loop validates against the
+  frozen screenshots. Divergence is killed *structurally*, not caught after the fact.
+- **Throwaway (minor / low-risk UI).** Keep only frozen screenshots as the reference; the dev loop
+  builds from scratch against them.
+
+**Storage of the approved prototype** splits by resource kind:
+
+- **Frozen screenshots** (visual acceptance reference) → the **Design Doc / feature issue**
+  (proof-style artifact, canonical, in the tracker; QA reads them). Both paths.
+- **Salvaged code** → a short-lived **`design/<issue>-<slug>` branch** (code belongs in git, not
+  as an issue attachment). On feature-branch creation it **seeds the `feat/…` integration branch**,
+  so every slice that branches off `feat/…` inherits the prototype automatically; the `design/…`
+  branch is then deleted (its content lives on in `feat/…`; the screenshots remain the durable
+  reference). For single-unit work with no `feat/…` branch, the `design/…` branch seeds the lone
+  `slice/…` or `task/…` branch instead.
 
 **Design Doc — *how*.** How we build it, **verified against the real codebase**: modules,
 interfaces, schema changes, API contracts, testing strategy, and the approved prototype as
 reference. One per PRD (fan out only for genuinely independent sub-features). Verified grill.
 
 **Vertical slices — *incremental delivery* (optional).** Only when the Design Doc is large. Each
-slice is independently shippable and is the **unit of parallelism** (one worktree/branch each).
+slice is independently **integrable/demoable** and is the **unit of parallelism** (one
+worktree/branch each). Slices merge into the `feat/…` integration branch as they finish; the
+**customer-facing release is feature-level** (`feat → main`). Truly standalone work ships directly
+as a `task/…` to `main` instead.
 
 **Implementation Plan — *agent-executable steps*.** The checkbox-level plan a build loop
 consumes. One per slice (or per feature if slicing was skipped).
@@ -171,24 +217,32 @@ engineer against the **real, assembled, refactored app**: takes screenshots, che
 approved prototype, and — because the surface is now stable — **writes the e2e suite here**. The
 one genuinely **new** runner/skill the build phase needs.
 
-**Verification — the human gate.** You test on main, one feature at a time, against a
-verification plan + proof. **The outcome lands in the tracker**, not just `.verify/` temp files:
+**Verification — the human gate.** Feature-level and serial: once all slices have merged into the
+`feat/…` integration branch, you test the **assembled feature** in the `feat/…` worktree (the
+"main tree" for that feature), one feature at a time, against a verification plan + proof.
+Feature-level is the default gate because integration bugs only surface once slices combine; slices
+still demo continuously on `feat/…` for your visibility, and a very large feature can opt into
+incremental per-slice verification. **The outcome lands in the tracker**, not just `.verify/`:
 
 - During: `.verify/` working doc (within-session FIC scratch).
 - At close: a **verification report** posted to the issue (what was tested, pass/fail, findings).
-- **Findings loop back**: fixes re-run the relevant build loop → re-verify; out-of-scope findings
-  spawn **linked task issues**. `stage:verify` stays until the slice passes clean.
+- **Findings loop back**: fixes re-run the relevant build loop on the slice → re-merge → re-verify;
+  out-of-scope findings spawn **linked task issues**. `stage:verify` stays until the feature passes
+  clean.
 
-**stage:docs — the tail.** After **all** of a PRD's slices are verified, one **PRD-level**
-`sync-docs` pass. It reads **git diffs + the verification report(s) + the issue tree** (not live
-conversation — it's long gone by now → FIC), so docs reflect verified reality *including*
-verification-driven changes. AFK-able; you give the doc changes a light review.
+**stage:docs — the tail.** After the feature passes verification (and before promoting to `main`),
+one **feature-level** `sync-docs` pass on the `feat/…` branch. It reads **git diffs + the
+verification report(s) + the issue tree** (not live conversation — long gone by now → FIC), so docs
+reflect verified reality *including* verification-driven changes. AFK-able; you give the doc changes
+a light review. Then `feat → main`.
 
 ### Worktrees & artifacts
 
 One branch + worktree per slice (or per Implementation Plan for small work). Loops run inside;
-on completion the branch is pushed and the worktree is **torn down**. Main is only ever touched
-by you, verifying.
+on completion the slice branch merges into the `feat/…` integration branch and the worktree is
+**torn down**. A multi-slice feature also has a **`feat/…` worktree** where slices integrate and
+where you verify the assembled feature. `main` itself is only ever touched by the final
+`feat → main` (or `task → main`) promote.
 
 | Artifact | Location | Rationale |
 |---|---|---|
@@ -200,26 +254,68 @@ by you, verifying.
 Cleanup is **state-aware**: a build dir is freed only once its issue is verified/closed — human
 verification is the trigger. Keys off the same issue state machine as everything else.
 
+### Branch naming
+
+**A branch exists if and only if there is a buildable unit.** Planning issues (`wayfinder:map`,
+PRD, Design Doc) hold no code and get no branch; only slices, tasks, fixes, and the transient
+design branch do.
+
+**Format:** `<type>/<issue-number>-<kebab-slug>` — lowercased, slug length-capped.
+
+- **Type prefix, always** — mechanism pattern-matches on it (orchestrator routing, cleanup, ralph's
+  protected-branch guard). `main` and any deploy branches are protected; nothing branches *as* them.
+- **Issue number, always** — the tracker is the source of truth; the number makes branch ↔ issue
+  traceability automatic (orchestrator, cleanup, and humans all map a branch to its state). A
+  branch with no issue is a smell. Cleanup keys off this number, same rule as `~/.ralph/builds/`.
+- **Base is contextual, not encoded** (slices off their `feat/…`; `feat/…` and `task/…` off main).
+
+| Type | For | Branches off | Lifecycle |
+|---|---|---|---|
+| `feat/` | a multi-slice feature's integration branch ("main feature branch") | main (seeded by `design/…` if any) | receives slice merges; verified + docs here; **promoted to main** (deploy trigger); torn down |
+| `slice/` | one vertical slice | its `feat/…` branch | build loops in a worktree; merged into `feat/…`; torn down |
+| `design/` | salvaged prototype for a feature | main (in a worktree) | short-lived; seeds `feat/…` (or the lone slice/task), then deleted |
+| `task/` | one small, self-contained unit (no `feat/…`) | main | build (dev → verify); merged straight to main; torn down |
+| `fix/` | a verification finding or feedback-loop bug (`bug`) | the `feat/…`/slice if in-scope & open, else main | merged; torn down |
+
+The **integration branch (`feat/…`) exists only when a feature has ≥2 slices**. Single-unit work
+(a `task/…`, a lone `slice/…`, a one-off `fix/…`) skips it and goes straight to `main`. `main` and
+any deploy branches are protected; only a verified `feat/…` or `task/…` promotes into `main`.
+
+The **type vocabulary is orchestrator policy**, not ralph's — ralph only needs "you're on a
+non-protected branch." This supersedes ad-hoc conventions (`feature/*`, `standards/…`). Canonical
+for projects using the system; the agent-toolkit repo itself may stay looser (it often has no
+per-change issue).
+
 ### State machine & labels
 
 **Triage axis (existing)** governs getting an issue *ready*:
 `needs-triage → needs-info → ready-for-agent / ready-for-human / wontfix` (+ `bug`/`enhancement`).
 
-**Build-stage axis (new)** takes over once implementation starts — one label at a time, on the
-**slice issue** (the shippable/worktree unit):
+**Build-stage axis (new)** takes over once implementation starts — one label at a time. The stages
+split across two altitudes: **slice-level** loops run on each slice issue and end when the slice
+merges into `feat/…`; **feature-level** verify and docs run on the feature (PRD) issue.
+
+*On the slice issue:*
 
 | Stage label | Meaning | Transition trigger |
 |---|---|---|
 | `stage:ready` | eligible to start (today: `ready-for-agent`) | orchestrator picks it up |
 | `stage:dev` | dev loop running | dev-loop checkboxes done |
 | `stage:refactor` | refactor loop running | review-loop returns zero blockers |
-| `stage:qa` | QA loop running | e2e written, proof captured |
-| `stage:verify` | **human gate** | you sign off → close issue (→ triggers cleanup) → PRD `stage:docs` |
+| `stage:qa` | QA loop running | e2e written, proof captured → **merge into `feat/…`**; slice done |
+
+*On the feature (PRD) issue, once all slices have merged into `feat/…`:*
+
+| Stage label | Meaning | Transition trigger |
+|---|---|---|
+| `stage:verify` | **human gate** — verify the assembled feature on the `feat/…` worktree | you sign off |
+| `stage:docs` | feature-level `sync-docs` pass on `feat/…` | docs reviewed → **promote `feat → main`** (deploy trigger) → close |
 
 A waiting slice carries the existing `blocked` label. **Convention:** all lifecycle-position
 labels share one namespace (`stage:`); `ready-for-agent` maps to `stage:ready` (relabel deferred).
 `stage:verify` ≠ `ready-for-human` (verify = check completed work; ready-for-human = implement).
-These are **canonical** names; real strings per repo come from `setup-agent-skills`.
+These are **canonical** names; real strings per repo come from `setup-agent-skills`. (Single-unit
+`task/…` work carries all stages on its one issue and promotes straight to `main`.)
 
 ### Parallelism & scheduling
 
@@ -234,7 +330,7 @@ once**. The orchestrator schedules across slices respecting four conflict dimens
 | **Runtime resources (QA)** | two QA loops clash on ports / test DB | **serialize QA (cap = 1) to start**; dev/refactor parallelize |
 
 Per-worktree runtime isolation (dynamic ports, DB-per-branch) is a later upgrade. **Verification
-is always serial** — one at a time, by you, on main.
+is always serial** — one feature at a time, by you, on the `feat/…` worktree.
 
 **The orchestrator: a manual pass first.** You invoke it; it reads the board and, for every issue
 it can legally advance (respecting conflicts + caps), launches the next background loop and flips
@@ -242,6 +338,24 @@ the `stage:` label, then reports and exits. Driven entirely by durable labels, s
 **idempotent and resumable** — a crashed loop just leaves its issue at the old label. The
 **standing autonomous loop is the same pass on a cron** (later, near-free). Builds on the existing
 `ralph-orchestrator` skill.
+
+### Release & deploy
+
+The standard owns everything **up to and including the merge to `main`**; the deploy itself is
+CI/CD and **out of scope** (project-specific). The contract at the boundary:
+
+- **Verification gates the merge.** Unverified code never reaches `main` — you verify the assembled
+  feature on `feat/…` first, then promote.
+- **`feat → main` (or `task → main`) is the deploy trigger.** The standard defines the trigger
+  point; the project's own pipeline defines what happens after.
+- **Cadence: continuous by default.** Each feature is verified before its merge, so features release
+  as they finish. Batch/held releases (feature flags, release trains) are a project layer on top.
+- **Issue lifecycle: close-on-merge by default.** verify → docs → promote → close (→ triggers
+  cleanup of `~/.ralph/builds/` and the branch). Add an optional `released` state only if a
+  project's deploy is async/gated and "merged but not yet live" must be tracked distinctly.
+
+This closes the cycle: verified feature → merge (deploy trigger) → released → monitoring/feedback →
+back to intake.
 
 ---
 
@@ -321,9 +435,16 @@ Being grilled into shape. Not final.
    (produced once the design settles).
 6. **`to-prd` fix** — split the current `to-prd` (which fuses PRD + design detail) into separate
    PRD and Design Doc producers.
-7. **Design step depth** — how much prototype fidelity is "approved"; how the prototype is stored
-   and referenced by the Design Doc and QA loop.
+7. ~~Design step depth~~ — RESOLVED. Salvage-as-default for UI-meaningful features (real design
+   system → dev-loop starting point → refactor → QA vs frozen screenshots), throwaway for minor UI.
+   Screenshots → issue; salvaged code → short-lived `design/…` branch consumed by slice #1. See
+   [Documents](#documents).
 8. **Monitoring axis** — whether it stays doc-only (`MONITORING.md`) or becomes a log-fetching
    skill.
-9. **Release/deploy** — the terminal "merged & released" step (likely CI/CD, mostly out of scope)
-   and how it flips the issue to closed/released.
+9. ~~Release/deploy~~ — RESOLVED. Standard ends at the verified `feat → main` promote (the deploy
+   trigger); deploy itself is CI/CD, out of scope. Continuous cadence, close-on-merge, optional
+   `released` state. See [Release & deploy](#release--deploy).
+
+Also resolved this session: **branch naming standard** (`<type>/<issue#>-<slug>`, buildable-unit
+only, with the `feat/…` integration branch) — see [Branch naming](#branch-naming); and the
+**`feat/…` integration-branch model** with **feature-level verification**.

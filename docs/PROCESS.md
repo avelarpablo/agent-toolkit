@@ -5,9 +5,15 @@ code — and how feedback loops back. This is the umbrella. Its one **fully-desi
 [Feature Lifecycle](#the-feature-lifecycle); the other parts are designed skeletons we will
 deepen later.
 
-> Status: **in design, not built.** We are defining the standard. Existing skills/runners are
-> referenced as the building blocks; they will be extended when we implement. Sections marked
+> Status: **in design, not built.** We are defining the standard from zero. Sections marked
 > _Open_ or _Stub_ are not final.
+>
+> **Reuse philosophy — existing skills are references, not mandates.** When this doc names an
+> existing skill/runner (`grill-me`, `review-loop`, `ralph`, `prototype`, `init-docs`, …), read it
+> as *"the closest existing analog to what we want here"* — **not** a commitment to reuse it. The
+> design is driven by what we want; each component is decided at build time as **reuse / adapt /
+> replace-with-new / remove**. Purpose-built replacements (and retiring superseded skills) are
+> expected. The [Build inventory](#open-questions) (#5) is where every such call is made deliberately.
 
 ---
 
@@ -123,6 +129,26 @@ wayfinding (map + dispatch). **Feature** → skip the map; `grill-me` → PRD, l
 **Research & POC are informal feeders, not stages.** Research runs in **subagents** (context
 isolation = FIC) and returns findings into the map/PRD. POCs use the existing `prototype` skill;
 their value is a *decision*, which lands in the PRD or Design Doc.
+
+### Grilling engine & profiles
+
+Grilling is **one reusable engine** (the behavior: one question at a time, recommend an answer, walk
+the decision tree, verify claims against code when the profile calls for it, and **checkpoint every
+decision to the working file** per the [FIC protocol](#fic--context-management-a-uniform-protocol)).
+It is **parameterized by a per-stage profile** — the mechanism/policy split applied to grilling:
+engine = mechanism (reusable), profile = policy (stage-specific prompt, no unrelated baggage).
+
+| Profile | Questions | Verifies vs code? | Output (→ producer) |
+|---|---|---|---|
+| **PRD** | product / what / scope | no | PRD (→ `to-prd`) |
+| **Design Doc** | technical / how | **yes** | Design Doc (→ `to-design-doc`) |
+| **Task** | lightweight, scoped | as needed | task issue |
+| **Wayfinding ticket** | resolve one decision | as needed | a resolved map ticket |
+
+Grill = interrogate; the `to-*` producer = synthesize & publish to the tracker (the producer does
+**not** interview — it synthesizes what the grill established). Existing `grill-me` / `grill-verified`
+/ `grill-with-docs` are **references for the engine's behavior**; they are likely **replaced by this
+unified engine + profiles and retired** (per the [reuse philosophy](#the-development-system)).
 
 ---
 
@@ -383,9 +409,14 @@ Threads through every altitude and lifecycle.
 - **Knowledge / Context** — `CONTEXT.md`, glossary, ADRs. Produced by the project lifecycle,
   consumed by every grill and loop.
 - **Documentation** — `init-docs`/`sync-docs` (create + maintain) **plus** the `stage:docs` tail.
-- **Monitoring / Observability** _(new)_ — a `MONITORING.md` describing how to observe the app
-  (log locations, how to pull logs, dashboards); later, optionally, a skill to fetch/inspect logs.
-  Feeds the feedback loop.
+- **Monitoring / Observability** _(new)_ — **doc-first**. A `MONITORING.md` describing how to
+  observe the app (log locations, how to pull logs, dashboards, key signals). It **mirrors the
+  `CONTEXT.md` hierarchy**: per-project `{project}/MONITORING.md` beside each app's `CONTEXT.md`,
+  plus an optional **root** `MONITORING.md` for shared/cross-cutting infra (shared DB, gateway, CI).
+  Lives at project root next to `CONTEXT.md`, **not** in `.agents/` (knowledge, not config), so
+  `init-docs`/`sync-docs` place & maintain it with the monorepo logic they already have. **Later**,
+  optionally, a log-fetching skill that **resolves the nearest `MONITORING.md`** for its path and
+  pulls logs/errors — closing the feedback loop into `log → triage → diagnose`.
 - **FIC — context management** — see below.
 - **Orchestration & state machine** — labels + the orchestrator pass.
 - **Layering** — mechanism vs. policy (below).
@@ -394,18 +425,50 @@ Threads through every altitude and lifecycle.
 - **Feedback loop** — post-release, `monitoring → log → triage → diagnose` returns work to the
   Product/Feature altitude. Makes the system a cycle.
 
-### FIC — context management
+### FIC — context management (a uniform protocol)
 
-Keep any session under **~50% context (~100k tokens)** — agent performance degrades past that.
+Keep any session under **~50% context (~100k tokens)** — agent performance degrades past that. FIC
+is **not per-skill best-practice** the engineer must remember; it is **one native protocol every
+long-running skill implements identically**, via a **shared FIC primitive**. Skills differ only in
+*what* they record, never in *how* FIC works (the "one engine, many profiles" shape — see
+[Grilling engine](#grilling-engine--profiles)).
 
-- **Durable cross-session state → the issue tracker** (map issue, stage labels, resolution &
-  verification reports). Not temp files.
-- **Within-session scratch + a resume pointer → stage dotdirs** (`.grill/`, `.verify/`, `.build/`),
-  promoted to the issue when it crystallizes.
-- **Compact via `handoff`** (exists): summarize → a fresh session reloads the summary + the durable
-  artifact (map / PRD / Design Doc), never the transcript.
-- **Offload to subagents** — the strongest technique: run research and codebase search in isolated
-  subagents that return only findings, keeping the driver's context clean.
+**The four-part contract (identical in every FIC-aware skill):**
+
+1. **Working file, standard location & format.** On start, open a per-topic working file in a
+   dotdir (`.grill/<slug>/`, `.verify/<slug>/`, `.wayfind/<slug>/`, …).
+2. **A live resume header — always current — leading with a copy-pasteable resume command** (fixes
+   the "I made a handoff and didn't know what to tell the new session" problem):
+   ```
+   ## Resume
+   ▶ To resume: start a new session and run  /wayfind <slug>
+     (or: "continue the FIC session at .grill/<slug>/progress.md")
+   - Progress so far: …
+   - Next step: …
+   - Open threads / undecided: …
+   - Pointers: <issue, prior docs, artifacts>
+   ```
+3. **Checkpoint-as-you-go (hard requirement).** Decisions/findings are written to the working file
+   the moment they're made — so compaction is always loss-free and the flush is tiny. A skill that
+   holds state only in the conversation is **non-compliant**.
+4. **Resume & compact, identical everywhere.** *Resume*: re-invoke the skill with the topic → it
+   detects the working file → loads the resume header (not the transcript) → continues. *Compact*:
+   **proactive** (agent watches its own context; nearing ~50% it flushes, finalizes the header, and
+   tells you to restart) or **on-demand** ("let's start fresh"). `handoff` produces the cutover
+   summary.
+
+**Layered state:** durable **cross-session** state → the **issue tracker** (map issue, stage
+labels, verification reports), never temp files; **within-session** scratch → the working file,
+promoted to the issue when it crystallizes. Across stages, the next skill loads the **published
+prior artifact** (PRD → Design Doc grill → tasks), never the previous transcript.
+
+**Offload to subagents** — the strongest lever: run research and codebase search in isolated
+subagents that return only findings, keeping the driver's context clean.
+
+**A general FIC skill** exposes the primitive directly with a *generic* profile — the "starting
+something open-ended, don't know how big" catch-all. It **degrades gracefully** (generic
+checkpointing) and **graduates** (the shared file format means re-entering a specific skill picks up
+the same file). It is the base layer the stage skills specialize, so building it makes them cheaper.
 
 ### Layering
 
@@ -431,16 +494,22 @@ Being grilled into shape. Not final.
    `review-loop` + `ralph`; QA = one new single-agent Playwright runner/skill.
 3. ~~Meta-orchestrator~~ — RESOLVED. Manual pass first; standing loop = same pass on a cron.
 4. ~~Label vocabulary~~ — RESOLVED. `stage:` namespace, on the slice issue.
-5. **Build inventory** — the final list of what is a skill vs a runner primitive vs a script
-   (produced once the design settles).
-6. **`to-prd` fix** — split the current `to-prd` (which fuses PRD + design detail) into separate
-   PRD and Design Doc producers.
+5. **Build inventory** *(the last open item)* — a per-capability **decision table** produced once
+   the design settles: `desired capability → closest existing analog → {reuse / adapt /
+   replace-with-new / new} → what to remove`, and for each, whether it's a skill, a runner
+   primitive, or a script. Must at least cover: the **grilling engine + profiles**, the **shared FIC
+   primitive** + **general FIC skill**, `to-prd` / `to-design-doc`, the **QA runner**, the
+   **orchestrator pass**, worktree-lifecycle scripts, and the label/branch conventions.
+6. ~~`to-prd` fix~~ — RESOLVED. Split into **`to-prd`** (what/why + **success criteria**, no impl
+   detail) and a new **`to-design-doc`** (how, verified, references the prototype), each fed by its
+   matching grill profile. See [Grilling engine](#grilling-engine--profiles).
 7. ~~Design step depth~~ — RESOLVED. Salvage-as-default for UI-meaningful features (real design
    system → dev-loop starting point → refactor → QA vs frozen screenshots), throwaway for minor UI.
    Screenshots → issue; salvaged code → short-lived `design/…` branch consumed by slice #1. See
    [Documents](#documents).
-8. **Monitoring axis** — whether it stays doc-only (`MONITORING.md`) or becomes a log-fetching
-   skill.
+8. ~~Monitoring axis~~ — RESOLVED. Doc-first: `MONITORING.md` mirrors the `CONTEXT.md` monorepo
+   hierarchy (per-project + optional root-shared), at project root not `.agents/`; log-fetching
+   skill later resolves the nearest one. See [Cross-cutting axes](#cross-cutting-axes).
 9. ~~Release/deploy~~ — RESOLVED. Standard ends at the verified `feat → main` promote (the deploy
    trigger); deploy itself is CI/CD, out of scope. Continuous cadence, close-on-merge, optional
    `released` state. See [Release & deploy](#release--deploy).

@@ -232,11 +232,17 @@ worktree; independent slices run in **parallel** across worktrees.
 
 **Dev loop.** `ralph` drives two models (Claude ↔ Codex) against the Implementation Plan until
 its checkboxes are done. TDD at the **unit/integration** level. **e2e tests are NOT written here**
-(UI still churning → brittle).
+(UI still churning → brittle). The dev loop is **focused strictly on making it work** — it does
+*not* refactor or apply design patterns (that's the refactor loop) and does *not* write e2e (that's
+QA). Its prompt/role is scoped to implementation only.
 
 **Refactor loop.** Not a new runner — **orchestrator policy chaining existing runners**:
 `review-loop` (find) → `ralph` (fix) → `review-loop` (re-check) → … until zero blockers.
-`review-loop` stays a pure critic; `ralph` stays the only thing that writes code.
+`review-loop` stays a pure critic; `ralph` stays the only thing that writes code. **This loop also
+owns design patterns** — agents tend not to reach for proper patterns, so this is where the code is
+assessed and refactored to the **best design pattern for the feature and for maintainability**.
+Patterns are found-and-applied *here*, against the real written code, rather than guessed up front
+(the Design Doc may name candidate patterns; the refactor loop confirms and applies them).
 
 **QA loop.** A **single exploratory agent** (not two-model) using the Playwright MCP acts as a QA
 engineer against the **real, assembled, refactored app**: takes screenshots, checks against the
@@ -492,6 +498,13 @@ the [reuse philosophy](#the-development-system), naming an existing skill is not
 
 **Type key:** 🟦 skill · 🟧 runner · ⬛ script · 📄 doc/template.
 
+**Organization — the process skills get their own directory.** The skills that make up *this
+process* are a distinct group, kept **separate** from runner-support skills and general-purpose
+skills (they belong to the process, not to any runner). New/adapted process skills live together in
+a dedicated directory/namespace (exact path TBD at build time). Runner-specific config (e.g.
+`ralph-dg`, ralph prompts) and general skills stay where they are. Each machine installs/removes the
+skills that conflict with this flow as needed.
+
 ### Project lifecycle & knowledge
 
 | Capability | Closest existing | Call | Type | Notes |
@@ -507,7 +520,7 @@ the [reuse philosophy](#the-development-system), naming an existing skill is not
 | Capability | Closest existing | Call | Type | Notes |
 |---|---|---|---|---|
 | Wayfinding: scope triage + map + dispatch | (ref: Matt Pocock wayfinder) | **new** | 🟦 | the universal front door; routes to grill profiles |
-| Grilling **engine** (behavior + checkpointing) | `grill-me` / `grill-verified` / `grill-with-docs` | **replace** | 🟦 | one engine; **retire the three** once it covers them |
+| Grilling **engine** (behavior + checkpointing) | `grill-me` / `grill-verified` / `grill-with-docs` | **replace** | 🟦 | one engine; **retire all three** (incl. `grill-with-docs`) once it covers them |
 | Grill **profiles** (PRD / Design Doc / Task / ticket) | — | **new** | 📄 | config/prompts parameterizing the engine |
 
 ### Document producers
@@ -516,7 +529,7 @@ the [reuse philosophy](#the-development-system), naming an existing skill is not
 |---|---|---|---|---|
 | PRD producer (what/why + success criteria) | `to-prd` | **adapt** | 🟦 | slim down; strip impl detail; **add success criteria** |
 | Design Doc producer (how, verified, prototype ref) | back half of `to-prd` | **new** | 🟦 | `to-design-doc`; links parent PRD |
-| Slice + implementation-plan producer | `to-vertical-issues` (+ `to-issues`) | **adapt** | 🟦 | align to `feat/`+`slice/` model & `stage:` labels; emit checkbox plan; consider consolidating with `to-issues` |
+| Slice + implementation-plan producer | `to-vertical-issues` (+ `to-issues`) | **adapt** | 🟦 | align to `feat/`+`slice/` model & `stage:` labels; emit checkbox plan. **Keep `to-issues` and `to-vertical-issues` separate** (not consolidated) |
 
 ### Design / prototype
 

@@ -1,9 +1,10 @@
 # The Development System
 
 How we take software from a vague idea (or an empty repo) to shipped, verified, documented
-code — and how feedback loops back. This is the umbrella. Its one **fully-designed** part is the
-[Feature Lifecycle](#the-feature-lifecycle); the other parts are designed skeletons we will
-deepen later.
+code — and how feedback loops back. This is the umbrella. Its **fully-designed core** is the
+[Feature Lifecycle](#the-feature-lifecycle) and the [cross-cutting axes](#cross-cutting-axes)
+(FIC, tracking, grilling, layering); the [Project lifecycle](#the-project-lifecycle-designed-stub)
+and a few later upgrades (log-fetch skill, standing orchestrator cron) remain designed skeletons.
 
 > Status: **in design, not built.** We are defining the standard from zero. Sections marked
 > _Open_ or _Stub_ are not final.
@@ -13,7 +14,7 @@ deepen later.
 > as *"the closest existing analog to what we want here"* — **not** a commitment to reuse it. The
 > design is driven by what we want; each component is decided at build time as **reuse / adapt /
 > replace-with-new / remove**. Purpose-built replacements (and retiring superseded skills) are
-> expected. The [Build inventory](#open-questions) (#5) is where every such call is made deliberately.
+> expected. The [Build inventory](#build-inventory-draft) is where every such call is made deliberately.
 
 ---
 
@@ -83,12 +84,16 @@ thing is a **cycle**, not a line:
    because agent UI *discussion* reliably diverges from delivered UI.
 6. **Mechanism vs. policy.** Runners own primitives; skills own pipeline knowledge; scripts own
    deterministic steps. See [Layering](#layering).
-7. **Main stays pristine.** All build work happens in worktrees; the main tree is for human
-   verification, one thing at a time.
+7. **Main stays pristine.** All build work happens in worktrees; `main` is only ever touched by the
+   final verified promote. Human verification happens on the feature's `feat/…` worktree, one
+   feature at a time.
 8. **The first version is never clean.** Build to make it work, then a separate loop refactors
    it to standard.
 9. **Frequent Intentional Compaction (FIC).** Keep any session under ~50% context (~100k
-   tokens); compact early, offload to subagents, reload low-resolution summaries. See [FIC](#fic--context-management).
+   tokens); compact early, offload to subagents, reload low-resolution summaries. See [FIC](#fic--context-management-a-uniform-protocol).
+10. **Two-family dialogue.** Every build loop pairs two different model families (e.g. Claude +
+    Codex) — different families catch different things, so the output is more accurate and closer to
+    intent.
 
 ---
 
@@ -110,21 +115,18 @@ the wayfinder skill — a `wayfinder:map` issue holding Destination, Decisions-s
 Out-of-scope; sharp decisions become child tickets resolved via grilling / prototyping /
 research; fog graduates into tickets as clarity grows.)
 
-**Wayfinding routes to the grill primitives — it does not replace them.** The grill skills are
-reusable primitives (the interrogation); wayfinding is policy (which grill, when, at what scope) —
-the same mechanism/policy split as ralph vs. the orchestrator. Wayfinding owns exactly two things:
-**scope triage** (Task/Feature/Product) and **dispatch** (route each open decision to the right
-grill):
-
-| Grill primitive | Kind of question | Hits real code? | Routed to for |
-|---|---|---|---|
-| `grill-me` | product / "what" | no | PRD, task definition, general design |
-| `grill-with-docs` | domain / terminology, vs `CONTEXT.md` + ADRs | reads docs | sharpening against the knowledge base; triage |
-| `grill-verified` | technical / "how", evidence-first | **yes** | Design Doc & implementation plans |
+**Wayfinding routes to grill _profiles_ — it does not run the grilling itself.** Grilling is one
+reusable engine parameterized by per-stage profiles (see
+[Grilling engine & profiles](#grilling-engine--profiles)); wayfinding is policy (which profile,
+when, at what scope) — the same mechanism/policy split as ralph vs. the orchestrator. Wayfinding
+owns exactly two things: **scope triage** (Task/Feature/Product) and **dispatch** (route each open
+decision to the right grill profile — product/what → PRD; technical/how → Design Doc; domain/
+terminology → knowledge-base sharpening).
 
 "Universal front door" is conceptual, not "always run a heavy map." **Product/foggy** → full
-wayfinding (map + dispatch). **Feature** → skip the map; `grill-me` → PRD, later `grill-verified`
-→ Design Doc. **Task** → a brief `grill-me` → one issue. A clear feature never pays the map tax.
+wayfinding (map + dispatch). **Feature** → skip the map; product-grill profile → PRD, later
+verified-grill profile → Design Doc. **Task** → a brief product grill → one issue. A clear feature
+never pays the map tax.
 
 **Research & POC are informal feeders, not stages.** Research runs in **subagents** (context
 isolation = FIC) and returns findings into the map/PRD. POCs use the existing `prototype` skill;
@@ -176,9 +178,8 @@ Slices run their build loops in parallel worktrees and merge into the **feature 
 branch** (`feat/…`); verification, docs, and the promote-to-`main` gate happen at the **feature
 level** on that branch. See [Branch naming](#branch-naming).
 
-Grilling appears **twice**, in two flavors: a **product grill** (`grill-me`) decides *what*
-(→ PRD/Task); a **verified grill** (`grill-verified`, checked against the code) decides *how*
-(→ Design Doc).
+Grilling appears **twice**, in two profiles: a **product grill** decides *what* (→ PRD/Task); a
+**verified grill** (checked against the code) decides *how* (→ Design Doc).
 
 ### Documents
 
@@ -642,17 +643,18 @@ Being grilled into shape. Not final.
    Refactor = orchestrator policy chaining `review-loop` + `ralph` (owns patterns); QA = one new
    **two-agent** Playwright runner/skill. Every build loop is a two-family dialogue.
 3. ~~Meta-orchestrator~~ — RESOLVED. Manual pass first; standing loop = same pass on a cron.
-4. ~~Label vocabulary~~ — RESOLVED. `stage:` namespace, on the slice issue.
-5. ~~Build inventory~~ — DRAFTED. See [Build inventory](#build-inventory-draft). Remaining: confirm
-   the reuse/replace calls (esp. retiring the three grills; consolidating `to-issues`/`to-vertical-
-   issues`) and the build order.
+4. ~~Label vocabulary~~ — RESOLVED. `stage:` namespace; slice-level labels (`dev`/`refactor`/`qa`)
+   on the slice issue, feature-level (`verify`/`docs`) on the PRD/feature issue.
+5. ~~Build inventory~~ — DRAFTED & confirmed. See [Build inventory](#build-inventory-draft). Grills
+   retired for the unified engine; `to-issues`/`to-vertical-issues` kept **separate**; process skills
+   get their own directory; build order starts with the FIC primitive.
 6. ~~`to-prd` fix~~ — RESOLVED. Split into **`to-prd`** (what/why + **success criteria**, no impl
    detail) and a new **`to-design-doc`** (how, verified, references the prototype), each fed by its
    matching grill profile. See [Grilling engine](#grilling-engine--profiles).
 7. ~~Design step depth~~ — RESOLVED. Salvage-as-default for UI-meaningful features (real design
    system → dev-loop starting point → refactor → QA vs frozen screenshots), throwaway for minor UI.
-   Screenshots → issue; salvaged code → short-lived `design/…` branch consumed by slice #1. See
-   [Documents](#documents).
+   Screenshots → issue; salvaged code → short-lived `design/…` branch that **seeds the `feat/…`
+   integration branch**. See [Documents](#documents).
 8. ~~Monitoring axis~~ — RESOLVED. Doc-first: `MONITORING.md` mirrors the `CONTEXT.md` monorepo
    hierarchy (per-project + optional root-shared), at project root not `.agents/`; log-fetching
    skill later resolves the nearest one. See [Cross-cutting axes](#cross-cutting-axes).

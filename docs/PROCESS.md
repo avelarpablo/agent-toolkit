@@ -450,6 +450,7 @@ Threads through every altitude and lifecycle.
   dev, e2e in QA).
 - **Feedback loop** — post-release, `monitoring → log → triage → diagnose` returns work to the
   Product/Feature altitude. Makes the system a cycle.
+- **Progress & tracking** _(new)_ — see below.
 
 ### FIC — context management (a uniform protocol)
 
@@ -495,6 +496,38 @@ subagents that return only findings, keeping the driver's context clean.
 something open-ended, don't know how big" catch-all. It **degrades gracefully** (generic
 checkpointing) and **graduates** (the shared file format means re-entering a specific skill picks up
 the same file). It is the base layer the stage skills specialize, so building it makes them cheaper.
+
+### Progress & tracking
+
+The system already *produces* all the progress data (issues + `stage:` labels + parent/child trees
++ altitudes). Tracking is a **view over that**, never a second source of truth — which is why an
+external board (Trello) is the wrong tool: it would be a second place to keep in sync.
+
+**GitHub Projects (v2) as the canonical view.** A Project is a live, native view layer that
+*references* issues/PRs (doesn't copy them). Multiple **views** over the same items, each with its
+own layout/filter:
+
+- **Board view** = the **build phase** — buildable units grouped by `stage:*`
+  (`ready → dev → refactor → qa → verify → docs`). Early columns hold **slices** (`dev`/`refactor`/
+  `qa`); later columns hold the **feature** at its feature-level gates (`verify`/`docs`).
+- **Roadmap view** = the **planning altitude** — wayfinder maps, PRDs, Design Docs on a timeline
+  (the "what's coming / 6-month" picture). Plus table views filtered by feature (PRD), assignee, or
+  altitude for team lanes.
+
+**The boundary is `stage:ready`:** an item lives in the roadmap while it's being shaped (map → PRD →
+Design Doc); the moment it's cut into a buildable unit and labeled `stage:ready`, it appears on the
+board and flows through the pipeline.
+
+**Consistency:** the **orchestrator already owns `stage:` transitions**, so in the same step it flips
+a label it also sets the Project's Status field via the API — one writer, no drift. Labels stay
+canonical; Project Status is a derived mirror. (Don't rely on Projects' built-in automations for
+this.)
+
+**Agent-driven reporting — a `status`/standup skill.** Progress reporting becomes an agent task, not
+a human one: an agent queries the tracker/Project (`gh` + GraphQL) and produces a narrative report on
+demand — *"3 features in flight: A in QA, B in refactor (2/3 slices), C blocked on #47; 2 awaiting
+your verification."* Same canonical state, no new data. **Trello is dropped** (retire the `trello`
+skill and `verify-prd`'s Trello sync) in favor of Projects.
 
 ### Layering
 
@@ -584,6 +617,9 @@ skills that conflict with this flow as needed.
 | General FIC skill | — | **new** | 🟦 | primitive + generic profile; base layer stage skills specialize |
 | Feedback intake | `log` / `triage` / `diagnose` | **reuse/adapt** | 🟦 | align `triage` to the `stage:` labels |
 | Log-fetching skill | — | **new** (later) | 🟦 | resolves nearest `MONITORING.md`; optional/deferred |
+| GitHub Projects view (board + roadmap) | (none) | **new** (in `setup-agent-skills`) | 📄 | orchestrator sets Status alongside labels; a view, not a source of truth |
+| `status`/standup progress reporter | — | **new** | 🟦 | agent narrates progress from tracker/Project (`gh` + GraphQL) |
+| Trello tracking | `trello` + `verify-prd` sync | **remove** | 🟦 | superseded by GitHub Projects |
 
 ### Suggested build order
 

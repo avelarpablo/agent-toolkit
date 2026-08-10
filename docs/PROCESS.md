@@ -230,11 +230,29 @@ consumes. One per slice (or per feature if slicing was skipped).
 All loops run **inside a worktree** on a dedicated branch. Loops run **serially** within a
 worktree; independent slices run in **parallel** across worktrees.
 
-**Dev loop.** `ralph` drives two models (Claude ↔ Codex) against the Implementation Plan until
-its checkboxes are done. TDD at the **unit/integration** level. **e2e tests are NOT written here**
-(UI still churning → brittle). The dev loop is **focused strictly on making it work** — it does
-*not* refactor or apply design patterns (that's the refactor loop) and does *not* write e2e (that's
-QA). Its prompt/role is scoped to implementation only.
+**Every build loop is a two-family dialogue.** Two agents of different model families
+(e.g. Claude + Codex) converge on the result — different families catch different things, so the
+output is more accurate and closer to intent. Dev = implement ↔ correctness-review; Refactor = find
+↔ fix (structure + patterns); QA = execute ↔ test-strategy critique.
+
+**Dev loop.** An **adapted `ralph`** (not rebuilt, not as-is). `ralph` already does the core: Claude
+implements the issue → a **blocking Codex correctness gate** reviews the commit → blockers loop back
+for a fix → re-review (that's the two-family dialogue). TDD at the **unit/integration** level.
+**e2e tests are NOT written here** (UI still churning → brittle). The loop is **focused strictly on
+making it work** — no refactor, no design patterns (refactor loop), no e2e (QA). Three adaptations
+to fit the pipeline:
+
+- **Stops at "dev-done"; the orchestrator owns stage transitions.** ralph must *not* close the issue
+  or unlock downstream (that's policy now) — it signals completion and the orchestrator flips the
+  `stage:` label and merges into `feat/…`.
+- **Runs in the worktree/slice-branch it's handed** — self-branching (`RALPH_FEATURE_BRANCH`)
+  disabled; ralph never creates/destroys branches (orchestrator + scripts do).
+- **Implementation-only prompt**, replacing the current project-specific `prompt.md`.
+
+The inline Codex gate is a **fast correctness check** ("is it broken?") and is kept *alongside* the
+separate refactor loop, which owns the different concern of structure + patterns ("is it clean?").
+`ralph` is also reused as the **fix actor in the refactor loop** — the same engine, a different
+prompt/role.
 
 **Refactor loop.** Not a new runner — **orchestrator policy chaining existing runners**:
 `review-loop` (find) → `ralph` (fix) → `review-loop` (re-check) → … until zero blockers.
@@ -244,9 +262,11 @@ assessed and refactored to the **best design pattern for the feature and for mai
 Patterns are found-and-applied *here*, against the real written code, rather than guessed up front
 (the Design Doc may name candidate patterns; the refactor loop confirms and applies them).
 
-**QA loop.** A **single exploratory agent** (not two-model) using the Playwright MCP acts as a QA
-engineer against the **real, assembled, refactored app**: takes screenshots, checks against the
-approved prototype, and — because the surface is now stable — **writes the e2e suite here**. The
+**QA loop.** A **two-agent dialogue** (different families) against the **real, assembled, refactored
+app**: a **driver** owns the Playwright MCP (only one hand on the browser) and executes; a
+**strategist/critic** proposes what & how to test and challenges coverage ("empty state? error path?
+the prototype's hover states?"). They converge on a test plan, capture screenshots, check against
+the approved prototype, and — because the surface is now stable — **write the e2e suite here**. The
 one genuinely **new** runner/skill the build phase needs.
 
 **Verification — the human gate.** Feature-level and serial: once all slices have merged into the
@@ -541,9 +561,9 @@ skills that conflict with this flow as needed.
 
 | Capability | Closest existing | Call | Type | Notes |
 |---|---|---|---|---|
-| Dev loop | `ralph` | **adapt** | 🟧 | worktree/branch config; unit/integ TDD (`tdd` skill as guidance) |
-| Refactor loop = find→fix→recheck | `review-loop` + `ralph` | **reuse** (as chained) | 🟧 | the chaining is orchestrator policy, not a new runner |
-| QA loop (Playwright, e2e, vs prototype) | (none) | **new** | 🟧 | single-agent; the one genuinely new runner |
+| Dev loop | `ralph` | **adapt** | 🟧 | stop at dev-done (orchestrator owns labels); run in given worktree (no self-branch); impl-only prompt; keep inline Codex correctness gate; unit/integ TDD (`tdd` guidance) |
+| Refactor loop = find→fix→recheck | `review-loop` + `ralph` | **reuse** (as chained) | 🟧 | chaining is orchestrator policy; `ralph` is the fix actor with a refactor prompt; owns structure + **design patterns** |
+| QA loop (Playwright, e2e, vs prototype) | (none) | **new** | 🟧 | **two-agent** (driver holds Playwright + strategist/critic); the one genuinely new runner |
 | `ralph-dg` | — | (per-project config) | 🟧 | project-specific variant, not core |
 
 ### Orchestration & scripts
@@ -582,8 +602,9 @@ Being grilled into shape. Not final.
 
 1. ~~Pre-PRD stage~~ — RESOLVED. Wayfinding is the universal front door (optional/scale-triaged);
    research/POC are informal subagent-driven feeders.
-2. ~~Loops as concrete skills~~ — RESOLVED. Dev = `ralph`; Refactor = orchestrator policy chaining
-   `review-loop` + `ralph`; QA = one new single-agent Playwright runner/skill.
+2. ~~Loops as concrete skills~~ — RESOLVED. Dev = **adapted** `ralph` (+ inline Codex gate);
+   Refactor = orchestrator policy chaining `review-loop` + `ralph` (owns patterns); QA = one new
+   **two-agent** Playwright runner/skill. Every build loop is a two-family dialogue.
 3. ~~Meta-orchestrator~~ — RESOLVED. Manual pass first; standing loop = same pass on a cron.
 4. ~~Label vocabulary~~ — RESOLVED. `stage:` namespace, on the slice issue.
 5. ~~Build inventory~~ — DRAFTED. See [Build inventory](#build-inventory-draft). Remaining: confirm

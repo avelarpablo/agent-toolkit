@@ -28,7 +28,7 @@ know each piece is done).
 The pieces that let you produce documents with FIC discipline. After Phase 0 you can grill →
 PRD → Design Doc by hand, with loss-free compaction.
 
-### 0.1 FIC primitive + general FIC skill
+### 0.1 FIC primitive + general FIC skill  ⚠ note the proactive-compaction risk — see [Risks](#risks--focus-points)
 The shared contract every long-running skill inherits, and the standalone catch-all.
 - **done-when:** a skill can open a per-topic working file with a live resume header (copy-pasteable
   resume command), checkpoint a decision the moment it's made, and a *fresh session* resumes from
@@ -83,7 +83,7 @@ Deterministic mechanism the orchestrator will call.
 
 ## Phase 2 — Build loops (hand-built)
 
-### 2.1 Dev loop — adapt `ralph`
+### 2.1 Dev loop — adapt `ralph`  ⚠ highest-risk item — see [Risks](#risks--focus-points)
 - **done-when:** ralph runs in a *handed* worktree (self-branching disabled), implements a slice's
   checkbox plan with unit/integ TDD + the inline Codex correctness gate, **stops at dev-done without
   closing the issue or touching labels**, and signals completion. Impl-only prompt.
@@ -170,6 +170,33 @@ Deterministic mechanism the orchestrator will call.
   runs alongside `2.1/2.2`.
 - **First runnable milestone:** after **0.3** you can produce PRDs + Design Docs by hand with FIC.
 - **First AFK milestone:** after **3.1** the system can build its own remaining pieces.
+
+## Risks & focus points
+
+Genuine risks, flagged here so they're not rediscovered mid-build. Read the relevant one *before*
+starting its item.
+
+1. **2.1 Dev-loop ralph adaptation — highest risk.** ralph's current control flow is *implement →
+   close issue → unlock downstream*. Our dev loop must instead **stop at dev-done, leave the issue
+   open, and not touch labels** (the orchestrator owns transitions). This cuts against ralph's core
+   end-of-run logic — expect adapt-heavy work, likely a fork of that logic rather than a config
+   flag. This is the item most likely to be underestimated by the inventory's "adapt" label.
+
+2. **0.1 Proactive FIC compaction is the hard part (affects your first step).** "The agent watches
+   its own context and compacts near ~50%" assumes it can *measure its own token usage* — which it
+   can't do reliably. Design 0.1 so **on-demand compaction + a heuristic trigger** (turn/message
+   count, or harness signals) is the primary path; treat self-measured proactivity as best-effort.
+   What actually guarantees safety is the **checkpoint-as-you-go discipline**, not the trigger — so
+   get that rock-solid first.
+
+3. **2.3 Playwright MCP in AFK/headless runs.** Interactively-authenticated MCP servers can be
+   *absent* in headless/cron contexts. Confirm the QA runner can authenticate Playwright inside the
+   loop environment before committing to the two-agent design; otherwise QA may need to stay
+   human-adjacent rather than fully AFK.
+
+4. **The self-hosting boundary is for AFK-buildable items only.** Human-gated items (verification,
+   design/prototype approval) can't fully self-host — you remain in the loop for those even after
+   Phase 3. "Self-host Phase 4+" means the *mechanical* parts, not the human gates.
 
 ## Open build-time details (from PROCESS.md)
 

@@ -1,0 +1,226 @@
+#!/bin/sh
+# claude-bg — show the background processes Claude Code agents have started,
+# across every terminal and both accounts.
+#
+#   claude-bg           detailed table
+#   claude-bg --short   compact one-liner for the status line
+#
+# How it works: every Bash tool call runs as a `zsh -c` that first sources a
+# shell snapshot from its config dir. That snapshot path is the fingerprint —
+# it identifies the process as agent-started AND says which account
+# (~/.claude = personal, ~/.claude-shopstack = shopstack) and which session
+# spawned it. We key off the wrapper rather than the process tree because a
+# detached background task gets reparented to init when its session ends,
+# which breaks any walk up to the `claude` pid.
+#
+# Nothing about background tasks appears in the status line payload or on
+# disk, so the process table is the only source of truth.
+#
+# Foreground tool calls are indistinguishable from background ones — same
+# wrapper, and both have stdout redirected to a tasks/*.output file — so age
+# is the discriminator: anything younger than CLAUDE_BG_MIN_AGE is a command
+# passing through, not something left running. Raise it if transient calls
+# from other sessions still show up.
+
+#   claude-bg open [port|pid]   open the task's URL in the browser
+#   claude-bg logs [port|pid]   follow the task's log
+#   claude-bg stop [port|pid]   terminate the task
+#
+# With one matching task the selector is optional — `cbg open` just works.
+
+mode="${1:-list}"
+selector="${2:-}"
+short=0
+case "$mode" in
+  --short) short=1 ;;
+  list|open|logs|stop) ;;
+  *) echo "usage: claude-bg [list|open|logs|stop] [port|pid]" >&2; exit 2 ;;
+esac
+min_age="${CLAUDE_BG_MIN_AGE:-10}"
+
+lsof_map="${TMPDIR:-/tmp}/claude-bg-ports.$$"
+lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {
+  n = split($9, a, ":"); print $2 " " a[n]
+}' | sort -u > "$lsof_map"
+
+# Snapshot used by this session, so its own tasks can be labelled. Found via a
+# sibling wrapper still parented to the same `claude` process as this script.
+own_claude=""
+p=$$
+i=0
+while [ "$i" -lt 12 ]; do
+  parent=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  { [ -z "$parent" ] || [ "$parent" -le 1 ] 2>/dev/null; } && break
+  if [ "$(ps -o comm= -p "$parent" 2>/dev/null | tr -d ' ')" = "claude" ]; then
+    own_claude="$parent"
+    break
+  fi
+  p="$parent"
+  i=$((i + 1))
+done
+own_snap=""
+[ -n "$own_claude" ] && own_snap=$(ps -axo ppid=,args= 2>/dev/null \
+  | awk -v c="$own_claude" '$1 == c && /shell-snapshots/ {
+      match($0, /snapshot-[^ ]+\.sh/); if (RSTART) { print substr($0, RSTART, RLENGTH); exit }
+    }')
+
+rows=$(ps -axo pid=,ppid=,etime=,args= 2>/dev/null | awk -v self=$$ -v ownsnap="$own_snap" -v portfile="$lsof_map" -v minage="$min_age" '
+  # macOS ps has no etimes, so parse etime: [[dd-]hh:]mm:ss
+  function secs(e,   d, p, k, n2, t) {
+    d = 0
+    if (index(e, "-")) { split(e, k, "-"); d = k[1]; e = k[2] }
+    n2 = split(e, p, ":")
+    t = (n2 == 3) ? p[1] * 3600 + p[2] * 60 + p[3] : p[1] * 60 + p[2]
+    return t + d * 86400
+  }
+  function human(s) {
+    if (s >= 86400) return sprintf("%dd", s / 86400)
+    if (s >= 3600)  return sprintf("%dh", s / 3600)
+    if (s >= 60)    return sprintf("%dm", s / 60)
+    return sprintf("%ds", s)
+  }
+  BEGIN { while ((getline line < portfile) > 0) { split(line, f, " "); port[f[1]] = f[2] } }
+  {
+    pid = $1; ppid = $2; age = secs($3)
+    args = $0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", args)
+    P[pid] = ppid; A[pid] = args; AGE[pid] = age; pids[++n] = pid
+    if (args ~ /shell-snapshots\/snapshot-/) {
+      wrapper[pid] = 1
+      acct[pid] = (args ~ /\.claude-shopstack/) ? "shopstack" : "personal"
+      match(args, /snapshot-[^ ]+\.sh/)
+      snap[pid] = RSTART ? substr(args, RSTART, RLENGTH) : ""
+      # The wrapper carries the command the agent actually ran, inside eval.
+      # Far more readable than the resolved binary path on the child process.
+      # Quoting varies (eval \x27..\x27 vs eval $\x27..\x27 for multi-line), so
+      # skip the quote by inspection rather than a fixed offset.
+      k = index(args, "eval ")
+      if (k) {
+        c = substr(args, k + 5)
+        if (substr(c, 1, 1) == "$") c = substr(c, 2)
+        q = substr(c, 1, 1)
+        if (q == "\x27" || q == "\"") c = substr(c, 2)
+        e = index(c, " < /dev/null")
+        if (e) c = substr(c, 1, e - 1)
+        sub(/(\x27|")$/, "", c)
+        cmd[pid] = c
+      }
+    }
+  }
+  END {
+    # Ancestors of this script are our own scan plumbing, never a task.
+    q = self
+    for (i = 0; i < 12; i++) { mine[q] = 1; q = P[q]; if (q == "" || q <= 1) break }
+
+    # A task is a direct child of a wrapper. Its port may be bound by any
+    # descendant (npm run dev -> node), so search the whole subtree.
+    for (i = 1; i <= n; i++) {
+      pid = pids[i]
+      w = P[pid]
+      if (!wrapper[w] || mine[pid] || wrapper[pid]) continue
+      if (AGE[pid] < minage) continue
+      args = A[pid]
+      if (args ~ /claude-bg|devports|statusline/) continue
+
+      found = port[pid]
+      if (found == "")
+        for (j = 1; j <= n; j++) {
+          c = pids[j]; anc = P[c]
+          for (k = 0; k < 8 && anc > 1; k++) {
+            if (anc == pid) { if (port[c] != "") { found = port[c] } break }
+            anc = P[anc]
+          }
+          if (found != "") break
+        }
+
+      here = (ownsnap != "" && snap[w] == ownsnap) ? "this" : "other"
+      label = (cmd[w] != "") ? cmd[w] : args
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", pid, here, acct[w], (found == "" ? "-" : found), human(AGE[pid]), substr(label, 1, 72)
+    }
+  }')
+
+rm -f "$lsof_map"
+
+if [ -z "$rows" ]; then
+  [ "$short" -eq 1 ] && exit 0
+  echo "No agent-started background processes."
+  exit 0
+fi
+
+if [ "$short" -eq 1 ]; then
+  total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
+  # Full URLs, not bare ports: terminals linkify them, which turns the status
+  # line into a clickable way into a running app. Two at most, to stay short.
+  listening=$(printf '%s\n' "$rows" | awk -F'\t' '
+    $4 != "-" && shown < 2 { printf "%s%s", sep, "http://localhost:" $4; sep = " "; shown++ }')
+  printf '%s bg' "$total"
+  [ -n "$listening" ] && printf ' %s' "$listening"
+  exit 0
+fi
+
+# ── open / logs / stop ────────────────────────────────────────────────────────
+# Resolve the selector (a port or a pid) to exactly one task before acting.
+if [ "$mode" != "list" ]; then
+  if [ -n "$selector" ]; then
+    match=$(printf '%s\n' "$rows" | awk -F'\t' -v s="$selector" '$1 == s || $4 == s')
+  elif [ "$mode" = "open" ]; then
+    # Only something listening can be opened, so ignore the rest — with one
+    # server up, `cbg open` needs no argument even when other tasks are running.
+    match=$(printf '%s\n' "$rows" | awk -F'\t' '$4 != "-"')
+  else
+    match="$rows"
+  fi
+
+  count=$(printf '%s\n' "$match" | grep -c . || true)
+  if [ "$count" -eq 0 ]; then
+    echo "No background task matching '$selector'." >&2
+    exit 1
+  fi
+  if [ "$count" -gt 1 ]; then
+    echo "Several tasks match — pick one by port or pid:" >&2
+    printf '%s\n' "$match" | awk -F'\t' '{ printf "  pid %-8s port %-6s %s\n", $1, $4, $6 }' >&2
+    exit 1
+  fi
+
+  pid=$(printf '%s' "$match" | cut -f1)
+  port=$(printf '%s' "$match" | cut -f4)
+  args=$(printf '%s' "$match" | cut -f6)
+
+  case "$mode" in
+    open)
+      if [ "$port" = "-" ]; then
+        echo "That task ($args) is not listening on a port." >&2
+        exit 1
+      fi
+      echo "Opening http://localhost:$port — $args"
+      open "http://localhost:$port"
+      ;;
+    logs)
+      logf=$(lsof -p "$pid" -a -d 1 -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+      case "$logf" in
+        /*) echo "Following $logf — Ctrl-C to stop"; exec tail -f "$logf" ;;
+        *)  echo "No log file for pid $pid (stdout is not a file)." >&2; exit 1 ;;
+      esac
+      ;;
+    stop)
+      echo "Stopping pid $pid — $args"
+      kill "$pid"
+      ;;
+  esac
+  exit 0
+fi
+
+printf '%-8s %-8s %-10s %-6s %-5s %s\n' PID SESSION ACCOUNT PORT UP COMMAND
+printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r pid here acct port age args; do
+  [ "$here" = "this" ] && here="this one"
+  printf '%-8s %-8s %-10s %-6s %-5s %s\n' "$pid" "$here" "$acct" "$port" "$age" "$args"
+  # The bare URL is deliberate: terminals linkify it, so it is click-to-open.
+  ref="$pid"; [ "$port" != "-" ] && ref="$port"
+  [ "$port" != "-" ] && printf '%-31s %s\n' "" "http://localhost:$port"
+  # Claude Code redirects a background task's stdout to its task output file,
+  # so fd 1 is the log without needing to know the task id.
+  logf=$(lsof -p "$pid" -a -d 1 -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  case "$logf" in
+    /*) printf '%-31s %s\n' "" "cbg open $ref · cbg logs $ref · cbg stop $ref" ;;
+    *)  printf '%-31s %s\n' "" "cbg stop $ref" ;;
+  esac
+done

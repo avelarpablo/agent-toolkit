@@ -1,0 +1,73 @@
+#!/bin/sh
+# devports — list local dev servers that are currently listening.
+#
+# Two modes:
+#   devports          detailed table (port, pid, process, working dir)
+#   devports --short  compact one-liner used by the Claude Code status line
+#
+# Detection: every listening TCP socket, minus known non-dev noise
+# (Control Center on 5000/7000, Spotify, Loom, Postman, editors) and minus
+# ephemeral high ports. Tunable via env:
+#   DEVPORTS_MAX_PORT   highest port considered a dev server (default 10000)
+#   DEVPORTS_IGNORE     extra egrep pattern of process names to hide
+
+max_port="${DEVPORTS_MAX_PORT:-10000}"
+noise='ControlCe|rapportd|Spotify|Loom|Postman|zed|Dropbox|Google|Slack|sharingd|AirPlay|identityservi'
+[ -n "$DEVPORTS_IGNORE" ] && noise="$noise|$DEVPORTS_IGNORE"
+
+# port<TAB>pid<TAB>command, one row per distinct port
+scan() {
+  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk -v max="$max_port" -v noise="$noise" '
+    NR == 1 { next }
+    $1 ~ noise { next }
+    {
+      addr = $9
+      n = split(addr, a, ":")
+      port = a[n] + 0
+      if (port <= 0 || port > max) next
+      if (seen[port]++) next
+      cmd = $1
+      if (cmd ~ /^com\.docke/) cmd = "docker"
+      if (cmd ~ /^Python/)     cmd = "python"
+      printf "%d\t%s\t%s\n", port, $2, cmd
+    }' | sort -n
+}
+
+rows=$(scan)
+
+if [ "$1" = "--short" ]; then
+  [ -z "$rows" ] && exit 0
+  printf '%s\n' "$rows" | awk '
+    { line = line sep $1 " " $3; sep = " · " }
+    END { if (line != "") printf "%s", line }'
+  exit 0
+fi
+
+if [ -z "$rows" ]; then
+  echo "No dev servers listening."
+  exit 0
+fi
+
+# Docker publishes every container port from the daemon PID, so its cwd is
+# meaningless — resolve those rows to the container name instead.
+docker_ports=""
+if printf '%s\n' "$rows" | grep -q '	docker$' && command -v docker >/dev/null 2>&1; then
+  docker_ports=$(docker ps --format '{{.Names}}	{{.Ports}}' 2>/dev/null)
+fi
+
+printf '%-7s %-8s %-10s %s\n' PORT PID PROCESS DIRECTORY
+printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r port pid cmd; do
+  dir=""
+  if [ "$cmd" = "docker" ] && [ -n "$docker_ports" ]; then
+    dir=$(printf '%s\n' "$docker_ports" | awk -F'\t' -v p=":$port->" '$2 ~ p { print "container " $1; exit }')
+  fi
+  if [ -z "$dir" ]; then
+    # Working directory of the owning process — tells you which repo it serves.
+    dir=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  fi
+  case "$dir" in
+    "$HOME"*) dir="~${dir#"$HOME"}" ;;
+  esac
+  printf '%-7s %-8s %-10s %s\n' "$port" "$pid" "$cmd" "${dir:--}"
+  printf '        http://localhost:%s\n' "$port"
+done

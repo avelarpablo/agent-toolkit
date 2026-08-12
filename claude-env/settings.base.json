@@ -1,0 +1,33 @@
+{
+  "model": "claude-opus-5",
+  "effortLevel": "medium",
+  "theme": "auto",
+  "autoMemoryEnabled": false,
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": true,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "bash __CLAUDE_ENV__/hooks/postedit-review.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash __CLAUDE_ENV__/hooks/stop.sh" }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "sh __CLAUDE_ENV__/statusline.sh"
+  },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "build-with-wordpress@claude-plugins-official": true
+  }
+}

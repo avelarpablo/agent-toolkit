@@ -77,6 +77,10 @@ The URL is printed in full on purpose: terminals linkify it, so **cmd-click on
 the status line opens the running app** — the closest thing a terminal has to a
 start button. Two URLs at most, to keep the line short; `cbg` lists the rest.
 
+When nothing is listening there is no URL to show, so the segment names the
+first task instead of leaving a bare count — `▶ 2 bg · npm run dev +1` rather
+than `▶ 2 bg`, which says nothing about what is actually running.
+
 | Segment | Source |
 | --- | --- |
 | cwd + git branch | `workspace.current_dir`, `git` |

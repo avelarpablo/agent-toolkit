@@ -153,7 +153,19 @@ if [ "$short" -eq 1 ]; then
   listening=$(printf '%s\n' "$rows" | awk -F'\t' '
     $4 != "-" && shown < 2 { printf "%s%s", sep, "http://localhost:" $4; sep = " "; shown++ }')
   printf '%s bg' "$total"
-  [ -n "$listening" ] && printf ' %s' "$listening"
+  if [ -n "$listening" ]; then
+    printf ' %s' "$listening"
+  else
+    # Nothing is listening, so a bare count says nothing about what is running.
+    # Name the first task instead, and count the rest.
+    printf '%s' "$(printf '%s\n' "$rows" | awk -F'\t' -v n="$total" '
+      NR == 1 {
+        c = $6
+        if (length(c) > 24) c = substr(c, 1, 23) "…"
+        printf " · %s", c
+        if (n > 1) printf " +%d", n - 1
+      }')"
+  fi
   exit 0
 fi
 

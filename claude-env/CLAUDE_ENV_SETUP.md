@@ -56,8 +56,11 @@ cd claude-env
 source ~/.zshrc                   # pick up the aliases
 ```
 
-For each account it merges `settings.base.json` into `<config-dir>/settings.json`
-(backing up to `settings.json.bak`), then writes the managed `~/.zshrc` block.
+For each account it links `<config-dir>/skills` at the shared library
+`~/.agents/skills` (symlinks into this repo's `skills/`, so a skill written once
+is available to every account), merges `settings.base.json` into
+`<config-dir>/settings.json` (backing up to `settings.json.bak`), then writes the
+managed `~/.zshrc` block.
 Settings changes apply to **new** sessions; a running session keeps whatever it
 started with.
 

@@ -21,6 +21,9 @@ ACCOUNTS=(
   "shopstack|~/.claude-shopstack"
 )
 ZSHRC="${ZSHRC:-$HOME/.zshrc}"
+# Every account reads its skills from the same place, so a skill written once is
+# available everywhere. ~/.agents/skills holds symlinks into this repo's skills/.
+SKILLS_SRC="${SKILLS_SRC:-$HOME/.agents/skills}"
 # ──────────────────────────────────────────────────────────────────────────────
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -66,6 +69,27 @@ for row in "${ACCOUNTS[@]}"; do
   if [[ ! -d "$dir" ]]; then
     warn "$label: $dir does not exist — run \`claude\` once with CLAUDE_CONFIG_DIR=$dir first, then re-run"
     continue
+  fi
+
+  # Skills: point the account at the shared library. A real directory here was
+  # populated by hand at some point — leave it alone and say so rather than
+  # replacing it with a link and losing whatever is inside.
+  skills_link="$dir/skills"
+  if [[ -L "$skills_link" ]]; then
+    if [[ "$(readlink "$skills_link")" == "$SKILLS_SRC" ]]; then
+      say "$label: skills already linked"
+    else
+      warn "$label: $skills_link points at $(readlink "$skills_link") — leaving it"
+    fi
+  elif [[ -d "$skills_link" ]]; then
+    warn "$label: $skills_link is a real directory — move it aside to share $SKILLS_SRC"
+  elif [[ ! -d "$SKILLS_SRC" ]]; then
+    warn "$label: $SKILLS_SRC does not exist — skipping skills"
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    say "$label: would link $skills_link -> $SKILLS_SRC"
+  else
+    ln -s "$SKILLS_SRC" "$skills_link"
+    say "$label: linked $skills_link -> $SKILLS_SRC"
   fi
 
   target="$dir/settings.json"

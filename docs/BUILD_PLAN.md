@@ -4,7 +4,7 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **0.1 done.** Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **0.1 + 0.1a done.** Phase 0 is hand-built; the system starts self-hosting after Phase 3.
 
 ## The bootstrapping principle
 
@@ -37,28 +37,54 @@ The shared contract every long-running skill inherits, and the standalone catch-
 - **needs:** nothing (foundation).
 - **↪** Shared FIC primitive; General FIC skill. Reference: `handoff`, `session-keeper`.
 
-**Built as:** `skills/fic/` — `fic` (the script: `init`/`checkpoint`/`header`/`resume`/`list`/
-`path`/`compact`), `PROTOCOL.md` (the contract skills inherit by reference), `SKILL.md` (the generic
-profile). Working files live at `<dotdir>/<slug>/progress.md`, dotdir per skill (`.fic`, `.grill`,
-`.verify`, …), auto-gitignored; `init` is idempotent so start and resume are one call.
+**Built as:** `skills/primitives/fic/` — `fic` (the script: `init`/`checkpoint`/`header`/`resume`/
+`list`/`path`/`compact`), `PROTOCOL.md` (the contract skills inherit by reference), `SKILL.md` (the
+generic profile). Working files live at `<dotdir>/<slug>/progress.md`, dotdir per skill (`.fic`,
+`.grill`, `.verify`, …), auto-gitignored; `init` is idempotent so start and resume are one call.
 
 **Decisions made at build time:**
 - **Script + protocol doc**, not prose alone — deterministic writes, uniform format, and
   checkpointing is one command. Skills inherit by referencing `PROTOCOL.md`.
 - **Single `progress.md`** per topic (resume header + append-only log), not the multi-file
   `.grill/` layout — a fresh session reads exactly one file. Profiles may add siblings later.
-- **Flat `skills/fic/`**, not a nested `process/` namespace — zero discovery risk; revisit once
-  several process skills exist. *(Closes the "process-skills directory" open build-time detail.)*
 - `fic compact` **refuses to run on an incomplete header** — the protocol enforces its own
   non-lossiness rather than trusting the agent to remember.
+
+### 0.1a Skill layering + per-account install — ✅ **DONE**
+Inserted before 0.2 because the split cuts *through* it: the grilling engine is a primitive, its
+PRD/Design-Doc profiles are flow. Building them as one unit would weld them together.
+- **done-when:** skills are grouped by layer; an account can be given some groups and not others;
+  a work account gets the primitives without this flow. — **met:** `shopstack` now installs 18
+  skills (primitives + general) and none of the 13 flow skills.
+- **needs:** nothing. **↪** Not in the original inventory — surfaced by "can skills be per-environment?"
+
+**Built as:** `skills/<group>/<name>/` with three groups — `primitives/` (11), `flows/personal-dev/`
+(13), `general/` (7); `accounts.json` mapping each account to its groups; `toolkit sync
+[--account <name>]` installing per account into `<config-dir>/skills`. Classification test, group
+table and rationale: [PROCESS.md → Organization](PROCESS.md#build-inventory-draft).
+
+**Decisions made at build time:**
+- **Grouped source, flat install** — supersedes 0.1's "flat `skills/fic/`". `toolkit` maps
+  `skills/<group>/<name>` → `<config-dir>/skills/<name>`, so the group is purely an install-time
+  concern: a skill's own path never changes and regrouping costs nothing. This removes the
+  discovery risk that motivated flat-source in the first place.
+  *(Closes the "process-skills directory" open build-time detail.)*
+- **`toolkit` owns skills; `claude-env` owns settings/hooks/statusline.** `claude-env` makes accounts
+  *alike*; skills are the thing that must *differ*. Its skills-linking block was removed.
+- **`toolkit sync` refuses when two accounts resolve to one skills directory** — learned the hard
+  way: mid-build, both accounts were symlinked at the shared `~/.agents/skills`, and syncing
+  shopstack stripped personal's flow skills from the shared tree.
 
 ### 0.2 Grilling engine + PRD & Design Doc profiles
 One engine, parameterized by a profile; checkpoints via 0.1.
 - **done-when:** the PRD profile runs a full grill (one question at a time, recommends answers,
   checkpoints each decision) and the Design Doc profile additionally verifies claims against code.
   Both leave a resumable working file.
-- **needs:** 0.1.
+- **needs:** 0.1, 0.1a.
 - **↪** Grilling engine (**replace** `grill-me`/`grill-verified`/`grill-with-docs`); Grill profiles.
+- **layering (from 0.1a):** the engine ships as `skills/primitives/grill/` — it must name no stage,
+  label or artifact type — and the PRD/Design-Doc profiles as `skills/flows/personal-dev/`. Build
+  them apart from the start; the engine has to be usable under a flow that isn't this one.
 
 ### 0.3 `to-prd` + `to-design-doc` producers
 Synthesize the grill's working file into published tracker issues.
@@ -215,5 +241,6 @@ starting its item.
 
 ## Open build-time details (from PROCESS.md)
 
-- ~~The process-skills **directory/namespace** path.~~ RESOLVED in 0.1 — flat in `skills/`.
+- ~~The process-skills **directory/namespace** path.~~ RESOLVED in 0.1a — grouped source
+  (`skills/primitives|flows/<flow>|general/`), flat install, group = unit of per-account install.
 - Whether Phase 4+ items are hand-built or self-hosted (decide at the boundary).

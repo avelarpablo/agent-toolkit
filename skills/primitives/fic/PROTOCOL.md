@@ -10,7 +10,7 @@ this directory. Skills differ only in **what** they record, never in **how** FIC
 > **A skill that holds its state only in the conversation is non-compliant.** The conversation is
 > the one thing guaranteed not to survive.
 
-Spec: [`docs/PROCESS.md` → FIC — context management](../../docs/PROCESS.md).
+Spec: [`docs/PROCESS.md` → FIC — context management](../../../docs/PROCESS.md).
 
 ---
 

@@ -50,8 +50,8 @@ Ask only what cannot be inferred. Use AskUserQuestion. Adaptive — skip questio
 - **Full recipe:** for isolated gh + Claude config dirs, path-based auto-routing
   (ralph + manual terminal), and the keychain gotchas (gh token-by-account vs
   Claude's sha256-namespaced legacy-vs-hashed slot, same-account refresh race),
-  see [`runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../runners/ralph/MULTI_ACCOUNT_SETUP.md).
-  The idempotent [`runners/ralph/setup-multi-account.sh`](../../runners/ralph/setup-multi-account.sh)
+  see [`runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../../runners/ralph/MULTI_ACCOUNT_SETUP.md).
+  The idempotent [`runners/ralph/setup-multi-account.sh`](../../../runners/ralph/setup-multi-account.sh)
   provisions all of it (edit its `ACCOUNTS` array) — prefer running/adapting it
   over hand-writing `accounts.toml` when the user wants multi-account.
 

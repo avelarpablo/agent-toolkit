@@ -552,12 +552,24 @@ the [reuse philosophy](#the-development-system), naming an existing skill is not
 
 **Type key:** 🟦 skill · 🟧 runner · ⬛ script · 📄 doc/template.
 
-**Organization — the process skills get their own directory.** The skills that make up *this
-process* are a distinct group, kept **separate** from runner-support skills and general-purpose
-skills (they belong to the process, not to any runner). New/adapted process skills live together in
-a dedicated directory/namespace (exact path TBD at build time). Runner-specific config (e.g.
-`ralph-dg`, ralph prompts) and general skills stay where they are. Each machine installs/removes the
-skills that conflict with this flow as needed.
+**Organization — three groups, and the group decides who gets the skill.** _(Resolved at build time;
+see [BUILD_PLAN §0.1a](BUILD_PLAN.md).)_ Skills live at `skills/<group>/<name>/`:
+
+| Group | Contains | Test |
+|---|---|---|
+| `primitives/` | portable mechanism — FIC, grilling engine, tdd, diagnose, prototype | names **no** stage, label, artifact type or branch convention |
+| `flows/<flow>/` | this process — `to-prd`, slicing, orchestrator, verification, docs tail | speaks the pipeline's vocabulary |
+| `general/` | tool references, stack guidance, machine setup | neither |
+
+This is the [mechanism/policy split](#layering) one level up, and it is what makes the process
+**portable**: an employer's mandated flow becomes another `flows/<name>/`, sharing every primitive
+while replacing the policy. The split runs *inside* single capabilities too — the grilling **engine**
+is a primitive, its **PRD/Design-Doc profiles** are flow.
+
+**The group is the unit of installation.** [`accounts.json`](../accounts.json) maps each Claude Code
+account (`CLAUDE_CONFIG_DIR`) to the groups it gets, and `toolkit sync` installs them into
+`<config-dir>/skills`. A work account takes `primitives` + `general` and none of this flow. The
+install tree stays **flat**, so a skill's own path never changes and regrouping is free.
 
 ### Project lifecycle & knowledge
 

@@ -1,0 +1,16 @@
+{
+  "_comment": "Which skill groups each Claude Code account gets. Mirrors the ACCOUNTS arrays in claude-env/setup-claude-env.sh and runners/ralph/setup-multi-account.sh. Groups are directories under skills/. Adding an account here is all `toolkit sync` needs.",
+
+  "default_account": "personal",
+
+  "accounts": {
+    "personal": {
+      "config_dir": "~/.claude",
+      "groups": ["primitives", "general", "flows/personal-dev"]
+    },
+    "shopstack": {
+      "config_dir": "~/.claude-shopstack",
+      "groups": ["primitives", "general"]
+    }
+  }
+}

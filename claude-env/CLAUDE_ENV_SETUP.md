@@ -56,15 +56,30 @@ cd claude-env
 source ~/.zshrc                   # pick up the aliases
 ```
 
-For each account it links `<config-dir>/skills` at the shared library
-`~/.agents/skills` (symlinks into this repo's `skills/`, so a skill written once
-is available to every account), merges `settings.base.json` into
-`<config-dir>/settings.json` (backing up to `settings.json.bak`), then writes the
-managed `~/.zshrc` block.
+For each account it merges `settings.base.json` into `<config-dir>/settings.json`
+(backing up to `settings.json.bak`), then writes the managed `~/.zshrc` block.
 Settings changes apply to **new** sessions; a running session keeps whatever it
 started with.
 
 Re-run it any time — it reports `already in sync` when there is nothing to do.
+
+### Skills are not part of this
+
+This script handles what should be **identical** everywhere. Skills are the one
+thing that should **differ** — your personal development flow has no business on
+a work account, and a client's mandated flow has none on yours. So
+`<config-dir>/skills` is owned by [`toolkit`](../toolkit), which installs a
+different set of skill groups per account from [`accounts.json`](../accounts.json):
+
+```bash
+./toolkit sync                      # every account, per its groups
+./toolkit sync --account shopstack  # just one
+```
+
+An earlier version of this script linked every account's `skills` at one shared
+`~/.agents/skills`. That is **incompatible** with per-account groups: through a
+shared tree, syncing one account deletes the other's skills. `toolkit sync` now
+refuses to run when two accounts resolve to the same directory.
 
 ---
 

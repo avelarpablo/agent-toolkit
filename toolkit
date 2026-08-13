@@ -6,8 +6,8 @@ SKILLS_SRC="$TOOLKIT_DIR/skills"
 RUNNERS_SRC="$TOOLKIT_DIR/runners"
 META_DIR="$TOOLKIT_DIR/.toolkit"
 DISABLED_FILE="$META_DIR/disabled.json"
+ACCOUNTS_FILE="$TOOLKIT_DIR/accounts.json"
 
-SKILLS_TARGET="$HOME/.agents/skills"
 ZSHRC="$HOME/.zshrc"
 
 SENTINEL_BEGIN="# >>> agent-toolkit runners >>>"
@@ -61,10 +61,68 @@ owns_symlink() {
   [[ "$target" == "$TOOLKIT_DIR/skills/"* ]]
 }
 
+# Skills are grouped by layer: skills/<group>/<name>/SKILL.md, where <group> may
+# itself be nested (flows/personal-dev). The group decides *which accounts* get
+# the skill; the install tree stays flat, so a skill's own path never changes.
+# Prints "<group><TAB><name>", sorted.
 available_skills() {
-  for d in "$SKILLS_SRC"/*/; do
-    [[ -f "$d/SKILL.md" ]] && basename "$d"
-  done
+  local f rel group name
+  while IFS= read -r f; do
+    rel="${f#"$SKILLS_SRC"/}"          # <group>/<name>/SKILL.md
+    rel="${rel%/SKILL.md}"             # <group>/<name>
+    name="${rel##*/}"
+    group="${rel%/*}"
+    [[ "$group" == "$name" ]] && group="(ungrouped)"
+    printf '%s\t%s\n' "$group" "$name"
+  done < <(find "$SKILLS_SRC" -name SKILL.md -type f 2>/dev/null | sort)
+}
+
+skill_group() {
+  # No `exit` on match: quitting awk early closes the pipe, and SIGPIPE under
+  # `set -o pipefail` fails the whole command substitution.
+  available_skills | awk -F'\t' -v n="$1" '$2 == n && !seen { print $1; seen = 1 }'
+}
+
+skill_src() {
+  local group
+  group="$(skill_group "$1")"
+  [[ -z "$group" ]] && return 1
+  [[ "$group" == "(ungrouped)" ]] && printf '%s/%s\n' "$SKILLS_SRC" "$1" || printf '%s/%s/%s\n' "$SKILLS_SRC" "$group" "$1"
+}
+
+# Names of the skills belonging to the given groups (space-separated string).
+skills_in_groups() {
+  local groups=" $1 " group name
+  while IFS=$'\t' read -r group name; do
+    [[ "$groups" == *" $group "* ]] && printf '%s\n' "$name"
+  done < <(available_skills)
+}
+
+# ---------------------------------------------------------------------------
+# Accounts — which groups each Claude Code account installs
+# ---------------------------------------------------------------------------
+
+account_names() {
+  python3 -c "
+import json
+print('\n'.join(json.load(open('$ACCOUNTS_FILE'))['accounts']))
+"
+}
+
+account_field() {
+  python3 -c "
+import json, sys
+a = json.load(open('$ACCOUNTS_FILE'))['accounts'].get('$1')
+if a is None: sys.exit(1)
+v = a['$2']
+print(' '.join(v) if isinstance(v, list) else v)
+"
+}
+
+account_target() {
+  local dir
+  dir="$(account_field "$1" config_dir)" || return 1
+  printf '%s/skills\n' "${dir/#\~/$HOME}"
 }
 
 available_runners() {
@@ -96,22 +154,27 @@ print(r.get('description', ''))
 # ---------------------------------------------------------------------------
 
 sync_skills() {
-  local dry_run="${1:-false}"
-  local force="${2:-false}"
+  local target="$1" groups="$2"
+  local dry_run="${3:-false}" force="${4:-false}"
   local created=0 removed=0 skipped=0 kept=0
 
-  if [[ ! -d "$SKILLS_TARGET" ]]; then
+  if [[ ! -d "$target" ]]; then
     if [[ "$dry_run" == "true" ]]; then
-      echo "  would create $SKILLS_TARGET"
+      echo "  would create $target"
     else
-      mkdir -p "$SKILLS_TARGET"
+      mkdir -p "$target"
     fi
   fi
 
-  # Add symlinks for enabled skills
-  for skill in $(available_skills); do
-    local link="$SKILLS_TARGET/$skill"
-    local target="$SKILLS_SRC/$skill"
+  local wanted=()
+  while IFS= read -r s; do [[ -n "$s" ]] && wanted+=("$s"); done < <(skills_in_groups "$groups")
+
+  # Add symlinks for the skills this account's groups entitle it to
+  local skill
+  for skill in "${wanted[@]}"; do
+    local link="$target/$skill"
+    local src
+    src="$(skill_src "$skill")"
 
     if is_disabled skills "$skill"; then
       # If disabled but our symlink exists, remove it
@@ -130,18 +193,18 @@ sync_skills() {
     if [[ -L "$link" ]]; then
       local current_target
       current_target="$(readlink "$link")"
-      if [[ "$current_target" == "$target" ]]; then
+      if [[ "$current_target" == "$src" ]]; then
         ((kept++))
         continue
       fi
-      if [[ "$current_target" == "$TOOLKIT_DIR/skills/"* ]]; then
-        # Our symlink but pointing to wrong place — update
+      if [[ "$current_target" == "$SKILLS_SRC/"* ]]; then
+        # Ours, but pointing at the old path — a regrouped skill lands here
         if [[ "$dry_run" == "true" ]]; then
-          echo "  would update $skill"
+          echo "  would regroup $skill → $src"
         else
           rm "$link"
-          ln -s "$target" "$link"
-          echo "  updated $skill"
+          ln -s "$src" "$link"
+          echo "  regrouped $skill"
         fi
         ((created++))
         continue
@@ -151,7 +214,7 @@ sync_skills() {
           echo "  would replace $skill (was → $current_target)"
         else
           rm "$link"
-          ln -s "$target" "$link"
+          ln -s "$src" "$link"
           echo "  replaced $skill (was → $current_target)"
         fi
         ((created++))
@@ -169,29 +232,34 @@ sync_skills() {
     fi
 
     if [[ "$dry_run" == "true" ]]; then
-      echo "  would create $skill → $target"
+      echo "  would create $skill → $src"
     else
-      ln -s "$target" "$link"
+      ln -s "$src" "$link"
       echo "  created $skill"
     fi
     ((created++))
   done
 
-  # Remove orphaned symlinks (ours that no longer exist in skills/)
-  for link in "$SKILLS_TARGET"/*/; do
+  # Remove symlinks of ours that this account should no longer have — either the
+  # skill is gone from skills/, or its group is not in this account's set.
+  local want_list=" ${wanted[*]} "
+  local link name
+  for link in "$target"/*/; do
     [[ -e "$link" ]] || continue
-    local name
     name="$(basename "$link")"
     [[ "$name" == .* ]] && continue
-    if owns_symlink "${link%/}" && [[ ! -d "$SKILLS_SRC/$name" ]]; then
-      if [[ "$dry_run" == "true" ]]; then
-        echo "  would remove $name (orphaned — no longer in skills/)"
-      else
-        rm "${link%/}"
-        echo "  removed $name (orphaned — no longer in skills/)"
-      fi
-      ((removed++))
+    owns_symlink "${link%/}" || continue
+    [[ "$want_list" == *" $name "* ]] && continue
+
+    local why="no longer in skills/"
+    [[ -n "$(skill_group "$name")" ]] && why="not in this account's groups"
+    if [[ "$dry_run" == "true" ]]; then
+      echo "  would remove $name ($why)"
+    else
+      rm "${link%/}"
+      echo "  removed $name ($why)"
     fi
+    ((removed++))
   done
 
   echo "  skills: $created changed, $kept unchanged, $removed removed, $skipped skipped"
@@ -278,25 +346,60 @@ sync_runners() {
 # ---------------------------------------------------------------------------
 
 cmd_sync() {
-  local dry_run="false"
-  local force="false"
-  for arg in "$@"; do
-    case "$arg" in
-      --dry-run) dry_run="true" ;;
-      --force)   force="true" ;;
+  local dry_run="false" force="false" accounts=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry_run="true"; shift ;;
+      --force)   force="true"; shift ;;
+      --account) accounts+=("${2:-}"); shift 2 ;;
+      --all)     shift ;;   # default; kept for explicitness
+      *) echo "Unknown option: $1"; exit 1 ;;
     esac
   done
 
   ensure_meta_dir
+
+  # No --account given: sync every account in accounts.json.
+  if [[ ${#accounts[@]} -eq 0 ]]; then
+    while IFS= read -r a; do accounts+=("$a"); done < <(account_names)
+  fi
 
   if [[ "$dry_run" == "true" ]]; then
     echo "Dry run — no changes will be made"
     echo ""
   fi
 
-  echo "Skills ($SKILLS_TARGET):"
-  sync_skills "$dry_run" "$force"
-  echo ""
+  # Per-account groups only mean something if the accounts have distinct trees.
+  # If two <config-dir>/skills resolve to one directory (e.g. both symlinked at a
+  # shared library), the second account's sync silently strips the first's skills.
+  local seen_targets=() a t resolved
+  for a in "${accounts[@]}"; do
+    t="$(account_target "$a")" || { echo "Unknown account: $a (see accounts.json)"; exit 1; }
+    resolved="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$t")"
+    local prev
+    for prev in "${seen_targets[@]:-}"; do
+      if [[ "$prev" == "$resolved" ]]; then
+        echo "ERROR: two accounts share one skills directory ($resolved)."
+        echo "  Per-account groups cannot work through a shared tree — syncing one"
+        echo "  account would remove the other's skills."
+        echo "  Fix: make each <config-dir>/skills its own directory, e.g."
+        echo "    rm '$t' && mkdir -p '$t'"
+        exit 1
+      fi
+    done
+    seen_targets+=("$resolved")
+  done
+
+  local account target groups
+  for account in "${accounts[@]}"; do
+    target="$(account_target "$account")" || { echo "Unknown account: $account (see accounts.json)"; exit 1; }
+    groups="$(account_field "$account" groups)"
+    echo "Skills — $account ($target)"
+    echo "  groups: $groups"
+    sync_skills "$target" "$groups" "$dry_run" "$force"
+    echo ""
+  done
+
   echo "Runners ($ZSHRC):"
   sync_runners "$dry_run"
 }
@@ -307,7 +410,7 @@ cmd_disable() {
 
   ensure_meta_dir
 
-  if [[ -d "$SKILLS_SRC/$name" ]]; then
+  if [[ -n "$(skill_group "$name")" ]]; then
     set_disabled skills "$name" add
     echo "Disabled skill: $name"
     echo "Run './toolkit sync' to apply"
@@ -327,7 +430,7 @@ cmd_enable() {
 
   ensure_meta_dir
 
-  if [[ -d "$SKILLS_SRC/$name" ]]; then
+  if [[ -n "$(skill_group "$name")" ]]; then
     set_disabled skills "$name" remove
     echo "Enabled skill: $name"
     echo "Run './toolkit sync' to apply"
@@ -346,47 +449,54 @@ cmd_status() {
   echo "===================="
   echo ""
   echo "Source: $TOOLKIT_DIR"
-  echo "Target: $SKILLS_TARGET"
   echo ""
 
-  echo "Skills:"
-  for skill in $(available_skills); do
-    local link="$SKILLS_TARGET/$skill"
-    local state=""
+  local account target groups
+  while IFS= read -r account; do
+    target="$(account_target "$account")"
+    groups="$(account_field "$account" groups)"
+    echo "Account: $account → $target"
+    echo "  groups: $groups"
 
-    if is_disabled skills "$skill"; then
-      state="disabled"
-    elif owns_symlink "$link" 2>/dev/null; then
-      state="installed"
-    elif [[ -L "$link" ]]; then
-      state="conflict (→ $(readlink "$link"))"
-    elif [[ -e "$link" ]]; then
-      state="conflict (real directory)"
-    else
-      state="not installed"
-    fi
+    local group name state link
+    while IFS=$'\t' read -r group name; do
+      link="$target/$name"
+      if [[ " $groups " != *" $group "* ]]; then
+        continue
+      elif is_disabled skills "$name"; then
+        state="disabled"
+      elif owns_symlink "$link" 2>/dev/null; then
+        state="installed"
+      elif [[ -L "$link" ]]; then
+        state="conflict (→ $(readlink "$link"))"
+      elif [[ -e "$link" ]]; then
+        state="conflict (real directory)"
+      else
+        state="not installed"
+      fi
+      printf "  %-18s %-32s %s\n" "$group" "$name" "$state"
+    done < <(available_skills)
 
-    printf "  %-35s %s\n" "$skill" "$state"
-  done
+    # Ours, installed here, but no longer entitled
+    for link in "$target"/*/; do
+      [[ -e "$link" ]] || continue
+      name="$(basename "$link")"
+      [[ "$name" == .* ]] && continue
+      owns_symlink "${link%/}" || continue
+      group="$(skill_group "$name")"
+      if [[ -z "$group" ]]; then
+        printf "  %-18s %-32s %s\n" "-" "$name" "orphaned (no longer in skills/)"
+      elif [[ " $groups " != *" $group "* ]]; then
+        printf "  %-18s %-32s %s\n" "$group" "$name" "stale (group not in this account)"
+      fi
+    done
+    echo ""
+  done < <(account_names)
 
-  # Check for orphaned symlinks (ours but no longer in skills/)
-  for link in "$SKILLS_TARGET"/*/; do
-    [[ -e "$link" ]] || continue
-    local name
-    name="$(basename "$link")"
-    [[ "$name" == .* ]] && continue
-    if owns_symlink "${link%/}" && [[ ! -d "$SKILLS_SRC/$name" ]]; then
-      printf "  %-35s %s\n" "$name" "orphaned (no longer in skills/)"
-    fi
-  done
-
-  echo ""
   echo "Runners:"
+  local runner desc state
   for runner in $(available_runners); do
-    local desc
     desc="$(runner_description "$runner")"
-    local state=""
-
     if is_disabled runners "$runner"; then
       state="disabled"
     elif grep -qF "$SENTINEL_BEGIN" "$ZSHRC" 2>/dev/null && \
@@ -395,7 +505,6 @@ cmd_status() {
     else
       state="not installed"
     fi
-
     printf "  %-20s %-10s %s\n" "$runner" "$state" "$desc"
   done
 }
@@ -413,7 +522,9 @@ case "${1:-status}" in
     echo "Usage: toolkit <command>"
     echo ""
     echo "Commands:"
-    echo "  sync [--dry-run] [--force]  Create/update skill symlinks and runner aliases"
+    echo "  sync [--dry-run] [--force] [--account <name>]"
+    echo "                              Install each account's skill groups + runner aliases"
+    echo "                              (no --account syncs every account in accounts.json)"
     echo "  disable <name>              Disable a skill or runner"
     echo "  enable <name>               Re-enable a skill or runner"
     echo "  status                      Show current state (default)"

@@ -4,7 +4,7 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **not started.** Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **0.1 done.** Phase 0 is hand-built; the system starts self-hosting after Phase 3.
 
 ## The bootstrapping principle
 
@@ -28,13 +28,29 @@ know each piece is done).
 The pieces that let you produce documents with FIC discipline. After Phase 0 you can grill →
 PRD → Design Doc by hand, with loss-free compaction.
 
-### 0.1 FIC primitive + general FIC skill  ⚠ note the proactive-compaction risk — see [Risks](#risks--focus-points)
+### 0.1 FIC primitive + general FIC skill — ✅ **DONE**
 The shared contract every long-running skill inherits, and the standalone catch-all.
 - **done-when:** a skill can open a per-topic working file with a live resume header (copy-pasteable
   resume command), checkpoint a decision the moment it's made, and a *fresh session* resumes from
-  the working file alone (no transcript). The general FIC skill runs on an arbitrary topic.
+  the working file alone (no transcript). The general FIC skill runs on an arbitrary topic. —
+  **met:** verified end-to-end from a clean shell knowing only the slug.
 - **needs:** nothing (foundation).
 - **↪** Shared FIC primitive; General FIC skill. Reference: `handoff`, `session-keeper`.
+
+**Built as:** `skills/fic/` — `fic` (the script: `init`/`checkpoint`/`header`/`resume`/`list`/
+`path`/`compact`), `PROTOCOL.md` (the contract skills inherit by reference), `SKILL.md` (the generic
+profile). Working files live at `<dotdir>/<slug>/progress.md`, dotdir per skill (`.fic`, `.grill`,
+`.verify`, …), auto-gitignored; `init` is idempotent so start and resume are one call.
+
+**Decisions made at build time:**
+- **Script + protocol doc**, not prose alone — deterministic writes, uniform format, and
+  checkpointing is one command. Skills inherit by referencing `PROTOCOL.md`.
+- **Single `progress.md`** per topic (resume header + append-only log), not the multi-file
+  `.grill/` layout — a fresh session reads exactly one file. Profiles may add siblings later.
+- **Flat `skills/fic/`**, not a nested `process/` namespace — zero discovery risk; revisit once
+  several process skills exist. *(Closes the "process-skills directory" open build-time detail.)*
+- `fic compact` **refuses to run on an incomplete header** — the protocol enforces its own
+  non-lossiness rather than trusting the agent to remember.
 
 ### 0.2 Grilling engine + PRD & Design Doc profiles
 One engine, parameterized by a profile; checkpoints via 0.1.
@@ -182,12 +198,11 @@ starting its item.
    end-of-run logic — expect adapt-heavy work, likely a fork of that logic rather than a config
    flag. This is the item most likely to be underestimated by the inventory's "adapt" label.
 
-2. **0.1 Proactive FIC compaction is the hard part (affects your first step).** "The agent watches
-   its own context and compacts near ~50%" assumes it can *measure its own token usage* — which it
-   can't do reliably. Design 0.1 so **on-demand compaction + a heuristic trigger** (turn/message
-   count, or harness signals) is the primary path; treat self-measured proactivity as best-effort.
-   What actually guarantees safety is the **checkpoint-as-you-go discipline**, not the trigger — so
-   get that rock-solid first.
+2. ~~**0.1 Proactive FIC compaction is the hard part.**~~ **RESOLVED in 0.1.** Self-measured context
+   usage is unreliable, so `PROTOCOL.md` ranks the triggers by trustworthiness: on-demand
+   (primary) → heuristic (`fic checkpoint` nudges every 10 entries) → self-assessed (best-effort
+   only, never load-bearing). Safety rests on **checkpoint-as-you-go**, which the script makes a
+   one-command habit, plus `fic compact` refusing to run on a stale header.
 
 3. **2.3 Playwright MCP in AFK/headless runs.** Interactively-authenticated MCP servers can be
    *absent* in headless/cron contexts. Confirm the QA runner can authenticate Playwright inside the
@@ -200,5 +215,5 @@ starting its item.
 
 ## Open build-time details (from PROCESS.md)
 
-- The process-skills **directory/namespace** path.
+- ~~The process-skills **directory/namespace** path.~~ RESOLVED in 0.1 — flat in `skills/`.
 - Whether Phase 4+ items are hand-built or self-hosted (decide at the boundary).

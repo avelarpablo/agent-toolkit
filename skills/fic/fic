@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+# fic — the Frequent Intentional Compaction primitive.
+#
+# Deterministic mechanics for the FIC contract (see PROTOCOL.md):
+#   1. a per-topic working file in a dotdir
+#   2. a live resume header led by a copy-pasteable resume command
+#   3. checkpoint-as-you-go
+#   4. resume & compact, identical everywhere
+#
+# Every FIC-aware skill calls this script rather than hand-writing the file,
+# so the format and the header stay uniform across skills.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+DEFAULT_DIR=".fic"
+NUDGE_EVERY=10
+
+die() { printf 'fic: %s\n' "$1" >&2; exit 1; }
+warn() { printf 'fic: %s\n' "$1" >&2; }
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+usage() {
+  cat <<'EOF'
+fic — Frequent Intentional Compaction primitive
+
+USAGE
+  fic init <slug> [--dir <dotdir>] [--title <title>] [--skill <name>]
+                  [--resume-cmd <cmd>]
+      Create (or find) the working file for a topic. Idempotent.
+      --dir         dotdir at repo root (default: .fic; e.g. .grill, .verify)
+      --title       human title for the topic (default: derived from slug)
+      --skill       skill that owns this session (recorded in metadata)
+      --resume-cmd  the copy-pasteable resume command (default: /fic <slug>)
+
+  fic checkpoint <slug> [--dir <dotdir>] <text...>
+      Append a timestamped entry to the log. Use '-' to read from stdin.
+      Do this the moment a decision or finding lands.
+
+  fic header <slug> [--dir <dotdir>]
+                    [--progress <t>] [--next <t>] [--open <t>] [--pointers <t>]
+      Rewrite fields of the live resume header. Only the fields you pass change.
+
+  fic resume <slug> [--dir <dotdir>] [--full]
+      Print the resume header (the cheap way to re-enter a topic).
+      --full prints the entire working file.
+
+  fic list [--dir <dotdir>]
+      List every FIC session in this repo, newest first.
+
+  fic path <slug> [--dir <dotdir>]
+      Print the working file's path.
+
+  fic compact <slug> [--dir <dotdir>]
+      Close out a session segment: verify the header is complete, stamp a
+      compaction marker, and print the resume instructions for a fresh session.
+
+  fic help | fic version
+
+NOTES
+  Working files live at <repo-root>/<dotdir>/<slug>/progress.md and the dotdir
+  is added to .gitignore automatically — this is within-session scratch.
+  Durable cross-session state belongs in the issue tracker, not here.
+EOF
+}
+
+# --------------------------------------------------------------------------
+# session location
+# --------------------------------------------------------------------------
+
+# Locate an existing session's working file. With --dir, look only there.
+# Without, scan every dotdir at the repo root and fail loudly on ambiguity.
+find_session() {
+  local slug="$1" dir="${2:-}" root
+  root="$(repo_root)"
+
+  if [[ -n "$dir" ]]; then
+    printf '%s\n' "$root/$dir/$slug/progress.md"
+    return 0
+  fi
+
+  local matches=() d candidate
+  for d in "$root"/.*/; do
+    [[ -d "$d" ]] || continue
+    candidate="${d}${slug}/progress.md"
+    [[ -f "$candidate" ]] && matches+=("$candidate")
+  done
+
+  case "${#matches[@]}" in
+    0) return 1 ;;
+    1) printf '%s\n' "${matches[0]}" ;;
+    *)
+      warn "slug '$slug' is ambiguous — found in ${#matches[@]} dotdirs:"
+      printf '  %s\n' "${matches[@]}" >&2
+      die "pass --dir to disambiguate"
+      ;;
+  esac
+}
+
+require_session() {
+  local slug="$1" dir="${2:-}" f
+  f="$(find_session "$slug" "$dir")" || die "no FIC session for '$slug' (run: fic init $slug)"
+  [[ -f "$f" ]] || die "no FIC session for '$slug' (run: fic init $slug)"
+  printf '%s\n' "$f"
+}
+
+ensure_gitignore() {
+  local dir="$1" root ignore
+  root="$(repo_root)"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  ignore="$root/.gitignore"
+  [[ -f "$ignore" ]] && grep -qxF "$dir/" "$ignore" && return 0
+  [[ -f "$ignore" ]] && [[ -n "$(tail -c 1 "$ignore")" ]] && printf '\n' >> "$ignore"
+  printf '%s/\n' "$dir" >> "$ignore"
+  warn "added '$dir/' to .gitignore"
+}
+
+# --------------------------------------------------------------------------
+# header helpers
+# --------------------------------------------------------------------------
+
+FIELD_PROGRESS="Progress so far"
+FIELD_NEXT="Next step"
+FIELD_OPEN="Open threads / undecided"
+FIELD_POINTERS="Pointers"
+
+set_field() {
+  local file="$1" key="$2" val="$3" tmp
+  tmp="$(mktemp)"
+  FIC_KEY="$key" FIC_VAL="$val" awk '
+    BEGIN { key = ENVIRON["FIC_KEY"]; val = ENVIRON["FIC_VAL"]; prefix = "- **" key ":**" }
+    index($0, prefix) == 1 { print prefix " " val; found = 1; next }
+    { print }
+    END { if (!found) exit 3 }
+  ' "$file" > "$tmp" || die "header field '$key' not found in $file"
+  mv "$tmp" "$file"
+}
+
+print_header() {
+  # Prints the Resume block only: no metadata comment, no trailing blank lines.
+  awk '
+    /^## Resume$/ { inblock = 1 }
+    inblock && /^## Log$/ { exit }
+    inblock && /^<!--/ { next }
+    inblock {
+      if ($0 ~ /^[[:space:]]*$/) { pending++; next }
+      while (pending > 0) { print ""; pending-- }
+      print
+    }' "$1"
+}
+
+# Header fields still holding the placeholder are unwritten.
+incomplete_fields() {
+  awk '/^## Resume$/ { inblock = 1 } inblock && /^## Log$/ { exit }
+       inblock && /^- \*\*.*:\*\* —$/ {
+         sub(/^- \*\*/, ""); sub(/:\*\* —$/, ""); print }' "$1"
+}
+
+# Counts real checkpoints; compaction markers are punctuation, not content.
+checkpoint_count() {
+  awk '/^## Log$/ { inlog = 1; next }
+       inlog && /^- \[/ && !/compaction point:/ { n++ }
+       END { print n + 0 }' "$1"
+}
+
+meta_get() {
+  local file="$1" key="$2"
+  awk -v k="$key" '
+    /^<!-- fic:meta / {
+      for (i = 1; i <= NF; i++) if (index($i, k "=") == 1) { print substr($i, length(k) + 2); exit }
+    }' "$file"
+}
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+cmd_init() {
+  local slug="" dir="$DEFAULT_DIR" title="" skill="" resume_cmd=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      --title) title="${2:-}"; shift 2 ;;
+      --skill) skill="${2:-}"; shift 2 ;;
+      --resume-cmd) resume_cmd="${2:-}"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || die "unexpected argument: $1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic init <slug> [--dir <dotdir>]"
+  dir="${dir#/}"; dir="${dir%/}"
+  [[ -n "$dir" ]] || die "--dir must not be empty"
+
+  local root file
+  root="$(repo_root)"
+  file="$root/$dir/$slug/progress.md"
+
+  if [[ -f "$file" ]]; then
+    printf '%s\n' "$file"
+    warn "session already exists — resuming it (fic resume $slug)"
+    return 0
+  fi
+
+  [[ -z "$title" ]] && title="${slug//[-_]/ }"
+  [[ -z "$resume_cmd" ]] && resume_cmd="/fic $slug"
+
+  mkdir -p "$(dirname "$file")"
+  cat > "$file" <<EOF
+# FIC: $title
+
+## Resume
+▶ To resume: start a new session and run  \`$resume_cmd\`
+  (or: "continue the FIC session at $dir/$slug/progress.md")
+- **$FIELD_PROGRESS:** —
+- **$FIELD_NEXT:** —
+- **$FIELD_OPEN:** —
+- **$FIELD_POINTERS:** —
+
+<!-- fic:meta slug=$slug dir=$dir skill=${skill:-none} created=$(now) -->
+
+## Log
+EOF
+
+  ensure_gitignore "$dir"
+  printf '%s\n' "$file"
+}
+
+cmd_checkpoint() {
+  local slug="" dir="" parts=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      --) shift; parts+=("$@"); break ;;
+      -) parts+=("$(cat)"); shift ;;
+      --*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || parts+=("$1"); shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic checkpoint <slug> <text...>"
+  local text="${parts[*]:-}"
+  [[ -n "$text" ]] || die "nothing to checkpoint — pass text or '-' for stdin"
+
+  local file
+  file="$(require_session "$slug" "$dir")"
+
+  # Multi-line entries stay legible: continuation lines are indented under the bullet.
+  printf -- '- [%s] %s\n' "$(now)" "$(printf '%s' "$text" | awk 'NR == 1 { print; next } { print "      " $0 }')" >> "$file"
+
+  local n
+  n="$(checkpoint_count "$file")"
+  printf 'checkpointed (%s %s) → %s\n' "$n" "$( ((n == 1)) && echo entry || echo entries )" "$file"
+  if (( n > 0 && n % NUDGE_EVERY == 0 )); then
+    printf '\n⚠  %s checkpoints in this session. Refresh the resume header (fic header %s …)\n' "$n" "$slug"
+    printf '   and consider compacting: fic compact %s\n' "$slug"
+  fi
+}
+
+cmd_header() {
+  local slug="" dir="" any=0
+  local progress="" next="" open="" pointers=""
+  local has_progress=0 has_next=0 has_open=0 has_pointers=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      --progress) progress="${2:-}"; has_progress=1; any=1; shift 2 ;;
+      --next) next="${2:-}"; has_next=1; any=1; shift 2 ;;
+      --open) open="${2:-}"; has_open=1; any=1; shift 2 ;;
+      --pointers) pointers="${2:-}"; has_pointers=1; any=1; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || die "unexpected argument: $1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic header <slug> [--progress <t>] [--next <t>] …"
+  (( any )) || die "pass at least one of --progress/--next/--open/--pointers"
+
+  local file
+  file="$(require_session "$slug" "$dir")"
+  (( has_progress )) && set_field "$file" "$FIELD_PROGRESS" "$progress"
+  (( has_next )) && set_field "$file" "$FIELD_NEXT" "$next"
+  (( has_open )) && set_field "$file" "$FIELD_OPEN" "$open"
+  (( has_pointers )) && set_field "$file" "$FIELD_POINTERS" "$pointers"
+  print_header "$file"
+}
+
+cmd_resume() {
+  local slug="" dir="" full=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      --full) full=1; shift ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || die "unexpected argument: $1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic resume <slug> [--full]"
+
+  local file
+  file="$(require_session "$slug" "$dir")"
+  if (( full )); then
+    cat "$file"
+  else
+    print_header "$file"
+    local n; n="$(checkpoint_count "$file")"
+    printf '\n(%s %s logged — full file: fic resume %s --full)\n' \
+      "$n" "$( ((n == 1)) && echo checkpoint || echo checkpoints )" "$slug"
+  fi
+}
+
+cmd_list() {
+  local dir="" root
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  root="$(repo_root)"
+
+  local files=() d f
+  if [[ -n "$dir" ]]; then
+    for f in "$root/$dir"/*/progress.md; do [[ -f "$f" ]] && files+=("$f"); done
+  else
+    for d in "$root"/.*/; do
+      [[ -d "$d" ]] || continue
+      for f in "$d"*/progress.md; do [[ -f "$f" ]] && files+=("$f"); done
+    done
+  fi
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    printf 'no FIC sessions in %s\n' "$root"
+    return 0
+  fi
+
+  # newest first, by last write
+  local sorted
+  sorted="$(for f in "${files[@]}"; do printf '%s\t%s\n' "$(date -r "$f" +%Y-%m-%dT%H:%M 2>/dev/null || echo '?')" "$f"; done | sort -r)"
+
+  printf '%-17s  %-28s  %s\n' 'UPDATED' 'SLUG' 'NEXT STEP'
+  while IFS=$'\t' read -r stamp f; do
+    [[ -n "$f" ]] || continue
+    local slug next
+    slug="$(meta_get "$f" slug)"
+    [[ -n "$slug" ]] || slug="$(basename "$(dirname "$f")")"
+    next="$(awk -v p="- **$FIELD_NEXT:**" 'index($0, p) == 1 { print substr($0, length(p) + 2); exit }' "$f")"
+    printf '%-17s  %-28s  %s\n' "$stamp" "$slug" "${next:-—}"
+  done <<< "$sorted"
+}
+
+cmd_path() {
+  local slug="" dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || die "unexpected argument: $1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic path <slug>"
+  require_session "$slug" "$dir"
+}
+
+cmd_compact() {
+  local slug="" dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) dir="${2:-}"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$slug" ]] && slug="$1" || die "unexpected argument: $1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "usage: fic compact <slug>"
+
+  local file missing
+  file="$(require_session "$slug" "$dir")"
+  missing="$(incomplete_fields "$file")"
+  if [[ -n "$missing" ]]; then
+    warn "resume header is incomplete — these fields are still empty:"
+    while IFS= read -r field; do printf '  - %s\n' "$field" >&2; done <<< "$missing"
+    die "fill them with 'fic header $slug …' before compacting (a stale header is a lossy handoff)"
+  fi
+
+  printf -- '- [%s] — compaction point: context flushed, fresh session continues from the header above —\n' "$(now)" >> "$file"
+
+  printf '\n=== Ready to compact ===\n\n'
+  print_header "$file"
+  printf '\nWorking file: %s\n' "$file"
+  printf 'Start a fresh session and run the resume command above. Nothing else carries over.\n'
+}
+
+# --------------------------------------------------------------------------
+
+main() {
+  local cmd="${1:-help}"
+  [[ $# -gt 0 ]] && shift || true
+  case "$cmd" in
+    init) cmd_init "$@" ;;
+    checkpoint|note) cmd_checkpoint "$@" ;;
+    header|update) cmd_header "$@" ;;
+    resume|show) cmd_resume "$@" ;;
+    list|ls) cmd_list "$@" ;;
+    path) cmd_path "$@" ;;
+    compact) cmd_compact "$@" ;;
+    help|-h|--help) usage ;;
+    version|--version) printf 'fic %s\n' "$VERSION" ;;
+    *) die "unknown command: $cmd (try: fic help)" ;;
+  esac
+}
+
+main "$@"

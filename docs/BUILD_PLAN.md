@@ -4,7 +4,7 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **0.1 + 0.1a done.** Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **0.1 + 0.1a done**; work-kind model decided (1.1a). Phase 0 is hand-built; the system starts self-hosting after Phase 3.
 
 ## The bootstrapping principle
 
@@ -101,10 +101,29 @@ Synthesize the grill's working file into published tracker issues.
 The mechanics that let work flow as issues + labels + branches + worktrees.
 
 ### 1.1 Label & branch conventions in `setup-agent-skills`
-- **done-when:** running it on a repo provisions the `stage:*` labels and documents the
-  `<type>/<issue#>-<slug>` branch convention (incl. `feat/`), mapped to real per-repo strings.
+- **done-when:** running it on a repo provisions the `stage:*`, `kind:*` and `triage:*` labels plus
+  the `needs:human` modifier, and documents the `<type>/<issue#>-<slug>` branch convention (incl.
+  `feat/`), mapped to real per-repo strings.
 - **needs:** nothing (can parallel Phase 0).
 - **↪** Tracker/label/branch vocabulary setup (**adapt** `setup-agent-skills`).
+- **includes the triage merge:** delete `ready-for-agent` (it *is* `stage:ready`); convert
+  `ready-for-human` into the `needs:human` modifier; keep `needs-info`; `wontfix` → closed with a
+  reason. Existing issues carrying the old labels need a migration pass — check the count first, it
+  may be `gh`-scriptable. See [PROCESS.md → State machine & labels](PROCESS.md#state-machine--labels).
+
+### 1.1a Work-kind intake — `log` + triage engine split
+The inbox and its exits, so captured work has a route in rather than sitting in a parking lot.
+- **done-when:** `log` writes `kind:*` and no `stage:` label; picking an item up runs the analysis
+  its kind calls for (`bug` → `diagnose`, `tech-debt` → scoped refactor, `wishlist` → wayfinding),
+  and each lands at `stage:ready` with a plan. The triage **engine** moves to `primitives/` with the
+  state vocabulary as a flow profile.
+- **needs:** 1.1 (labels), 0.1a (the primitive/flow split).
+- **↪** Capture inbox (**adapt** `log`); Triage engine (**adapt** → `primitives/`); Triage state
+  profile (**new**); Bug front-half (**reuse** `diagnose`).
+- **decided:** kinds need no parallel pipelines — they converge at `stage:ready`; research/POC are
+  wayfinder-created, not logged; findings route by implication, with pure knowledge going to
+  `CONTEXT.md`/ADR rather than the tracker. See
+  [PROCESS.md → Work kinds](PROCESS.md#work-kinds--the-inbox-and-its-exits).
 
 ### 1.2 Worktree, label-flip & cleanup scripts
 Deterministic mechanism the orchestrator will call.
@@ -152,7 +171,8 @@ Deterministic mechanism the orchestrator will call.
 
 ### 3.1 Orchestrator pass
 - **done-when:** a manual pass reads the board and, respecting the four conflict dimensions +
-  concurrency caps (QA=1), advances every legally-advanceable issue: creates/tears down worktrees
+  concurrency caps (QA=1) and skipping anything flagged `needs:human`, advances every
+  legally-advanceable issue: creates/tears down worktrees
   (via 1.2), launches the right loop, flips the `stage:` label **and** sets the Project Status, and
   reports. Idempotent + resumable (re-run picks up from labels).
 - **needs:** Phases 1 + 2 complete.
@@ -180,8 +200,10 @@ Deterministic mechanism the orchestrator will call.
 ### 4.3 Wayfinding front door
 - **done-when:** scope-triages (Task/Feature/Product), builds a `wayfinder:map` for foggy/product
   work, and dispatches decisions to the right grill profile; degrades to a direct grill for clear
-  work.
-- **needs:** 0.2 (profiles). **↪** Wayfinding (**new**).
+  work. Also dispatches by **kind** for items picked up from the inbox (1.1a) — `bug` to `diagnose`,
+  `tech-debt` to a scoped refactor, `wishlist` to the feature front-half.
+- **needs:** 0.2 (profiles), 1.1a (kinds). **↪** Wayfinding (**new**); creates research/POC tickets
+  on a map rather than treating them as logged work.
 
 ### 4.4 Progress & tracking
 - **done-when:** a GitHub Project (board by `stage:*` + roadmap for planning) is set up and kept in

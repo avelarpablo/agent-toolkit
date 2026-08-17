@@ -341,8 +341,23 @@ per-change issue).
 
 ### State machine & labels
 
-**Triage axis (existing)** governs getting an issue *ready*:
-`needs-triage → needs-info → ready-for-agent / ready-for-human / wontfix` (+ `bug`/`enhancement`).
+Three namespaces, each answering a different question — never overlapping:
+
+| Namespace | Answers | Owner |
+|---|---|---|
+| `kind:` | what triggered this work | `log`, at capture |
+| `triage:` | is it ready to build? (**pre**-buildable) | you, via `triage` |
+| `stage:` | where is it in the build? (**buildable**) | the orchestrator |
+| `needs:human` | who executes it — a **modifier**, not a state | you |
+
+**Triage axis** governs getting an issue *ready*: `needs-triage → needs-info → wontfix`, and the
+single exit into the build machine is **`needs-triage → stage:ready`**.
+
+`ready-for-agent` is **deleted** — it was `stage:ready` under another name. `ready-for-human` is
+**not a state**: it answers *who executes*, while every `stage:` answers *where it is*. An issue can
+be fully analyzed and buildable and still need you (judgment, credentials, design taste). So it
+becomes the modifier `needs:human`, which the orchestrator reads to skip that issue when dispatching
+loops. As a state it would force every stage to fork into agent and human variants.
 
 **Build-stage axis (new)** takes over once implementation starts — one label at a time. The stages
 split across two altitudes: **slice-level** loops run on each slice issue and end when the slice
@@ -364,11 +379,38 @@ merges into `feat/…`; **feature-level** verify and docs run on the feature (PR
 | `stage:verify` | **human gate** — verify the assembled feature on the `feat/…` worktree | you sign off |
 | `stage:docs` | feature-level `sync-docs` pass on `feat/…` | docs reviewed → **promote `feat → main`** (deploy trigger) → close |
 
-A waiting slice carries the existing `blocked` label. **Convention:** all lifecycle-position
-labels share one namespace (`stage:`); `ready-for-agent` maps to `stage:ready` (relabel deferred).
-`stage:verify` ≠ `ready-for-human` (verify = check completed work; ready-for-human = implement).
-These are **canonical** names; real strings per repo come from `setup-agent-skills`. (Single-unit
-`task/…` work carries all stages on its one issue and promotes straight to `main`.)
+A waiting slice carries the existing `blocked` label. These are **canonical** names; real strings per
+repo come from `setup-agent-skills`. (Single-unit `task/…` work carries all stages on its one issue
+and promotes straight to `main`.)
+
+### Work kinds — the inbox and its exits
+
+Not all work is a feature someone set out to build. Most of it is **logged and forgotten**: a bug
+noticed mid-task, a shortcut you knew you were taking, an idea you had once. That shared property —
+*captured, unanalyzed, deferred* — is a *state*, not a kind. The **kind only decides which analysis
+runs when you pick it back up**, and every path converges at `stage:ready` carrying a plan:
+
+| `kind:` | Analysis on pickup | Produces |
+|---|---|---|
+| `bug` | **`diagnose`** — reproduce, root-cause | a failing test as the acceptance criterion + a fix plan |
+| `tech-debt` | scope the refactor (target usually already known) | a refactor plan; often skips design entirely |
+| `wishlist` | **wayfinding** → PRD (research/POC as needed) → Design Doc | the full feature front-half |
+
+For a *hard* bug the diagnosis **is** the design doc — root cause, blast radius, chosen fix,
+rejected fixes. For a trivial one it's a sentence. Ceremony scales with difficulty, exactly as it
+scales with scope at the [altitudes](#wayfinding--the-universal-front-door).
+
+**The inbox is `kind:` with no `stage:` label.** Absence of a stage label *is* the inbox, so the
+orchestrator — which only ever acts on `stage:*` — can never pick up something unanalyzed.
+
+**Research and POC are not kinds.** They are **wayfinder-created**: a map ticket names an unresolved
+decision, and research or a POC is *how it gets resolved*. They produce decisions that land in a map,
+PRD or Design Doc — never commits. Nothing logs them; nothing builds them.
+
+**Findings are routed, never stored as a kind.** Something important surfaced mid-conversation is
+disposed of by what it *implies*: buildable → `kind:wishlist`; broken → `kind:bug`; structurally
+wrong → `kind:tech-debt`; and if it is simply **knowledge about how the system works**, it belongs in
+`CONTEXT.md` or an ADR via `sync-docs` — **not in the tracker**, where knowledge goes to die.
 
 ### Parallelism & scheduling
 
@@ -628,7 +670,11 @@ install tree stays **flat**, so a skill's own path never changes and regrouping 
 | Feature-level verification + report to tracker | `verify-prd` (+ `audit-the-prd`, `close-prd`) | **adapt** | 🟦 | run on `feat/…` worktree; report + findings→linked issues; use PRD success criteria |
 | Shared **FIC primitive** (working file, resume header, checkpoint, resume/compact) | `handoff` (+ `session-keeper` for keep-alive) | **new** | 🟦 | the base every long-running skill inherits; `handoff` **adapts** into the cutover step |
 | General FIC skill | — | **new** | 🟦 | primitive + generic profile; base layer stage skills specialize |
-| Feedback intake | `log` / `triage` / `diagnose` | **reuse/adapt** | 🟦 | align `triage` to the `stage:` labels |
+| Capture inbox (`kind:bug`/`tech-debt`/`wishlist`) | `log` | **adapt** | 🟦 | add the `kind:` namespace; no `stage:` label = the inbox |
+| Triage **engine** | `triage` | **adapt** → `primitives/` | 🟦 | mechanism: read the board, evaluate, apply a state, post templates |
+| Triage **state profile** | (inside `triage`) | **new** → `flows/` | 📄 | the vocabulary is policy — a work flow is another profile, not a second skill |
+| Bug front-half | `diagnose` | **reuse** | 🟦 | peer of the grill: for a hard bug the diagnosis *is* the Design Doc |
+| `needs:human` modifier | `ready-for-human` | **replace** | 📄 | who-executes, not where-it-is; orchestrator skips these when dispatching |
 | Log-fetching skill | — | **new** (later) | 🟦 | resolves nearest `MONITORING.md`; optional/deferred |
 | GitHub Projects view (board + roadmap) | (none) | **new** (in `setup-agent-skills`) | 📄 | orchestrator sets Status alongside labels; a view, not a source of truth |
 | `status`/standup progress reporter | — | **new** | 🟦 | agent narrates progress from tracker/Project (`gh` + GraphQL) |

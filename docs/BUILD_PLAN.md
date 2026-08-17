@@ -140,10 +140,14 @@ The mechanics that let work flow as issues + labels + branches + worktrees.
 ### 1.1a Work-kind intake — `log` + triage engine split
 The inbox and its exits, so captured work has a route in rather than sitting in a parking lot.
 - **done-when:** `log` writes `kind:*` and no `stage:` label; picking an item up runs the analysis
-  its kind calls for (`bug` → `diagnose`, `tech-debt` → scoped refactor, `wishlist` → wayfinding),
-  and each lands at `stage:ready` with a plan. The triage **engine** moves to `primitives/` with the
-  state vocabulary as a flow profile.
+  its kind calls for — `bug` → `diagnose`, `tech-debt` → scoped refactor — and lands at `stage:ready`
+  with a plan. The triage **engine** moves to `primitives/` with the state vocabulary as a flow
+  profile.
 - **needs:** 1.1 (labels), 0.1a (the primitive/flow split).
+- **`wishlist` is deliberately out of scope here.** Its exit is *promotion into wayfinding*, which
+  does not exist until 4.3 — and 4.3 needs this item's kinds. Until then a promoted wishlist item is
+  handed to whatever grill profile exists; 4.3 closes the loop. (Naming wayfinding in this item's
+  acceptance check made the phase graph unsortable.)
 - **↪** Capture inbox (**adapt** `log`); Triage engine (**adapt** → `primitives/`); Triage state
   profile (**new**); Bug front-half (**reuse** `diagnose`).
 - **decided:** kinds need no parallel pipelines — they converge at `stage:ready`; research/POC are
@@ -179,8 +183,10 @@ Deterministic mechanism the orchestrator will call.
 
 ### 2.2 Refactor loop wiring
 - **done-when:** an orchestrated chain runs `review-loop` (find) → `ralph` (fix, refactor prompt) →
-  re-check until zero blockers, and applies the **best design pattern** for maintainability. `ralph`
-  fix-actor reused with a refactor prompt.
+  re-check until `review-loop` returns **zero blockers**. Maintainability/pattern quality is gated
+  the only way it can be tested — by encoding pattern violations as blockers in the `review-loop`
+  criteria file, not by an unfalsifiable "applies the best design pattern" clause. `ralph` fix-actor
+  reused with a refactor prompt.
 - **needs:** 2.1 (ralph as fix actor), `review-loop` (reuse as-is).
 - **↪** Refactor loop (**reuse** `review-loop` + `ralph`, chained).
 
@@ -199,8 +205,11 @@ Deterministic mechanism the orchestrator will call.
 - **done-when:** a manual pass reads the board and, respecting the four conflict dimensions +
   concurrency caps (QA=1) and skipping anything flagged `needs:human`, advances every
   legally-advanceable issue: creates/tears down worktrees
-  (via 1.2), launches the right loop, flips the `stage:` label **and** sets the Project Status, and
-  reports. Idempotent + resumable (re-run picks up from labels).
+  (via 1.2), launches the right loop, flips the `stage:` label, and reports. Idempotent + resumable
+  (re-run picks up from labels).
+- **Project Status writes are *not* part of this acceptance check** — the Project does not exist
+  until 4.4. 4.4 adds the Status write to the pass it already owns. (Requiring it here made 3.1 and
+  4.4 mutually blocking.)
 - **needs:** Phases 1 + 2 complete.
 - **↪** Orchestrator pass (**adapt** `ralph-orchestrator`).
 
@@ -235,7 +244,8 @@ Deterministic mechanism the orchestrator will call.
 - **done-when:** a GitHub Project (board by `stage:*` + roadmap for planning) is set up and kept in
   sync by the orchestrator's Status writes; a `status`/standup skill narrates progress from the
   tracker. `trello` skill + `verify-prd` Trello sync **removed**.
-- **needs:** 3.1 (orchestrator Status writes). **↪** GitHub Projects view; `status` skill; remove Trello.
+- **needs:** 3.1 (the orchestrator pass exists). This item **adds** the Project Status write to
+  that pass — 3.1 does not depend on the Project. **↪** GitHub Projects view; `status` skill; remove Trello.
 
 ---
 

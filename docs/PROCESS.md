@@ -556,9 +556,11 @@ long-running skill implements identically**, via a **shared FIC primitive**. Ski
    holds state only in the conversation is **non-compliant**.
 4. **Resume & compact, identical everywhere.** *Resume*: re-invoke the skill with the topic → it
    detects the working file → loads the resume header (not the transcript) → continues. *Compact*:
-   **proactive** (agent watches its own context; nearing ~50% it flushes, finalizes the header, and
-   tells you to restart) or **on-demand** ("let's start fresh"). `handoff` produces the cutover
-   summary.
+   triggers ranked by how much they can be trusted — **on-demand** ("let's start fresh", or before
+   something context-expensive) is primary; a **heuristic nudge** (the primitive nudges every 10
+   checkpoints) is secondary; **self-assessed proactivity is best-effort only and never
+   load-bearing**, because an agent cannot reliably measure its own token usage. What guarantees
+   safety is rule 3, not the trigger. `handoff` produces the cutover summary.
 
 **Layered state:** durable **cross-session** state → the **issue tracker** (map issue, stage
 labels, verification reports), never temp files; **within-session** scratch → the working file,

@@ -93,7 +93,9 @@ thing is a **cycle**, not a line:
    tokens); compact early, offload to subagents, reload low-resolution summaries. See [FIC](#fic--context-management-a-uniform-protocol).
 10. **Two-family dialogue.** Every build loop pairs two different model families (e.g. Claude +
     Codex) — different families catch different things, so the output is more accurate and closer to
-    intent.
+    intent. This applies to **documents too**: a plan gets the same adversarial pass as a diff, via
+    the [critique loop](#the-critique-loop--one-engine-two-targets). A defect caught in the plan is
+    the cheapest defect there is.
 
 ---
 
@@ -288,6 +290,37 @@ one **feature-level** `sync-docs` pass on the `feat/…` branch. It reads **git 
 verification report(s) + the issue tree** (not live conversation — long gone by now → FIC), so docs
 reflect verified reality *including* verification-driven changes. AFK-able; you give the doc changes
 a light review. Then `feat → main`.
+
+### The critique loop — one engine, two targets
+
+`ralph` and `review-loop` look alike but are not: `review-loop` is an **N-round dialogue** —
+alternating Claude and Codex, each round fed the prior rounds' findings, read-only, terminating at a
+fixed round count. `ralph` is an autonomous **mutating** loop with a *single-shot* Codex gate. The
+shared primitive is narrower than either:
+
+> **Critique an artifact against explicit criteria using a second model family, structured output.**
+
+`review-loop` is the N-round form; ralph's gate is the 1-round form.
+
+That primitive is **target-agnostic**, so one runner serves both:
+
+| Target | Adapter | Profile | Criteria |
+|---|---|---|---|
+| code | a git diff (`--pr` / `--base`) | `code` | per-repo standards |
+| a plan, spec or design doc | files read as-is (`--files`) | `coherence` | `criteria/coherence.md` |
+
+Everything downstream — rounds, schema, assembly — is identical; only what is put in front of the
+models differs.
+
+**Why documents need it.** The design front half had no adversarial gate: grill → PRD → Design Doc →
+publish, unchecked, at exactly the altitude where mistakes are cheapest to fix. The coherence
+criteria don't judge decisions — they find **contradictions, duplicate concepts under two names,
+orphaned references, ordering violations, unfalsifiable acceptance criteria, resolved-but-not-decided
+questions, and load-bearing unstated assumptions** (C-1…C-8). Every one of those was found by hand in
+this system's own spec before the loop existed.
+
+**On demand now, a gate later** — `to-prd`/`to-design-doc` will run it pre-publish once the criteria
+have proven themselves on real documents.
 
 ### Worktrees & artifacts
 
@@ -652,6 +685,8 @@ install tree stays **flat**, so a skill's own path never changes and regrouping 
 | Dev loop | `ralph` | **adapt** | 🟧 | stop at dev-done (orchestrator owns labels); run in given worktree (no self-branch); impl-only prompt; keep inline Codex correctness gate; unit/integ TDD (`tdd` guidance) |
 | Refactor loop = find→fix→recheck | `review-loop` + `ralph` | **reuse** (as chained) | 🟧 | chaining is orchestrator policy; `ralph` is the fix actor with a refactor prompt; owns structure + **design patterns** |
 | QA loop (Playwright, e2e, vs prototype) | (none) | **new** | 🟧 | **two-agent** (driver holds Playwright + strategist/critic); the one genuinely new runner |
+| **Critique loop** — N-round two-family review of an artifact | `review-loop` | **adapt** | 🟧 | target adapter: a diff (code) or files read as-is (plans/specs). Profiles = prompt sets |
+| Coherence criteria (plans/specs) | — | **new** | 📄 | `criteria/coherence.md` — C-1..C-8; operationalizes "does this document hold together" |
 | `ralph-dg` | — | (per-project config) | 🟧 | project-specific variant, not core |
 
 ### Orchestration & scripts

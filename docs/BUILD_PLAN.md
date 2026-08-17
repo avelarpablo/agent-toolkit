@@ -4,7 +4,7 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **0.1 + 0.1a done**; work-kind model decided (1.1a). Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **0.1, 0.1a, 0.1b done**; work-kind model decided (1.1a). Phase 0 is hand-built; the system starts self-hosting after Phase 3.
 
 ## The bootstrapping principle
 
@@ -75,6 +75,31 @@ table and rationale: [PROCESS.md → Organization](PROCESS.md#build-inventory-dr
   way: mid-build, both accounts were symlinked at the shared `~/.agents/skills`, and syncing
   shopstack stripped personal's flow skills from the shared tree.
 
+### 0.1b Critique loop — document target + coherence criteria — ✅ **DONE**
+Built before 0.2 so it serves the plan work still ahead of it.
+- **done-when:** `review-loop` can review a plan/spec as well as a diff, against coherence criteria,
+  and the pass finds real defects in this system's own documents. — **met:** dogfooded on
+  `PROCESS.md` + `BUILD_PLAN.md`.
+- **needs:** nothing. **↪** Critique loop (**adapt** `review-loop`); Coherence criteria (**new**).
+
+**Built as:** `--files <path>` target adapter (line-numbered, so findings cite jumpable locations)
+alongside the existing diff adapter; `--profile` selecting `prompts/<profile>/`, inferred from the
+target (files → `coherence`, diff → `code`); `criteria/coherence.md` with rules C-1…C-8;
+profile-aware assembly. Rationale:
+[PROCESS.md → The critique loop](PROCESS.md#the-critique-loop--one-engine-two-targets).
+
+**Decisions made at build time:**
+- **Generalize the runner, don't fork it.** Verified first that `ralph` and `review-loop` are *not*
+  the same shape — `review-loop` is an N-round two-family dialogue; ralph is a mutating loop with a
+  single-shot Codex gate. The shared primitive is "critique an artifact against criteria with a
+  second family"; `review-loop` was already one adapter away from serving both targets.
+- **On demand now, gate later** — wire it into `to-prd`/`to-design-doc` at 0.3 once the criteria have
+  proven themselves, rather than hardening untested criteria into a mandatory gate.
+- **Criteria grade coherence, not judgment** — C-1…C-8 find contradictions, duplicate concepts,
+  orphaned references, ordering violations, unfalsifiable criteria, resolved-not-decided questions,
+  unstated load-bearing assumptions, scope leaks. Disagreeing with a recorded decision is explicitly
+  out of scope, and padding is explicitly forbidden.
+
 ### 0.2 Grilling engine + PRD & Design Doc profiles
 One engine, parameterized by a profile; checkpoints via 0.1.
 - **done-when:** the PRD profile runs a full grill (one question at a time, recommends answers,
@@ -87,7 +112,8 @@ One engine, parameterized by a profile; checkpoints via 0.1.
   them apart from the start; the engine has to be usable under a flow that isn't this one.
 
 ### 0.3 `to-prd` + `to-design-doc` producers
-Synthesize the grill's working file into published tracker issues.
+Synthesize the grill's working file into published tracker issues. Candidate home for the coherence
+gate from 0.1b, once its criteria have proven themselves.
 - **done-when:** `to-prd` publishes a PRD (what/why + **success criteria**, no impl detail);
   `to-design-doc` publishes a Design Doc (how, verified, prototype reference) linked to its PRD.
   Neither interviews — they synthesize the working file.

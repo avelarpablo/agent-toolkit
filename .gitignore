@@ -9,3 +9,4 @@ runners/ralph/logs/
 runners/ralph/reviews/
 runners/ralph/.run.lock
 .fic/
+.reviews/

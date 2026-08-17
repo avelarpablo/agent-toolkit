@@ -101,7 +101,10 @@ def cmd_build_prompt(args):
 
     prompt = template.replace("{schema}", schema)
     prompt = prompt.replace("{criteria}", criteria)
+    # {diff} is the code profile's name for it; {content} is target-agnostic
+    # (a diff, or files read as-is). Both resolve to the same text.
     prompt = prompt.replace("{diff}", diff)
+    prompt = prompt.replace("{content}", diff)
 
     if args.prior:
         for i, prior_file in enumerate(args.prior):
@@ -139,11 +142,15 @@ def cmd_assemble(args):
     nits = [f for f in active if f["severity"] == "nit"]
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    profile = getattr(args, "profile", None) or "code"
+    title = {"code": "Code Review", "coherence": "Coherence Review"}.get(
+        profile, f"{profile.title()} Review"
+    )
     lines = [
-        f"# Code Review — {args.target} | {now}",
+        f"# {title} — {args.target} | {now}",
         "",
         f"**Criteria:** `{args.criteria}`  ",
-        f"**Diff:** {args.target}  ",
+        f"**Target:** {args.target}  ",
         f"**Rounds:** {len(rounds)} ({' -> '.join(reviewers)})",
         "",
         "---",
@@ -315,6 +322,7 @@ def main():
     p = sub.add_parser("assemble")
     p.add_argument("--round-files", nargs="+", required=True)
     p.add_argument("--target", required=True)
+    p.add_argument("--profile", default="code")
     p.add_argument("--criteria", required=True)
     p.add_argument("--output", required=True)
 

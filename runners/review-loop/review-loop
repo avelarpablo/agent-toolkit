@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIB="$SCRIPT_DIR/lib/helpers.py"
 SCHEMA="$SCRIPT_DIR/schemas/round-schema.json"
-PROMPTS_DIR="$SCRIPT_DIR/prompts"
+PROMPTS_ROOT="$SCRIPT_DIR/prompts"
 REVIEWS_DIR=".reviews"
 
 CLAUDE_MODEL="${REVIEW_CLAUDE_MODEL:-claude-opus-4-6}"
@@ -18,6 +18,8 @@ BASE="develop"
 ROUNDS=3
 DRY_RUN=0
 INCLUDE_ALL=0
+PROFILE=""
+FILES=()
 
 usage() {
   cat <<'EOF'
@@ -28,6 +30,9 @@ Usage:
 
 Options:
   --criteria <path>    Criteria file or directory (required)
+  --files <path>       Review these files as-is instead of a diff (repeatable).
+                       Use for plans, specs and design docs.
+  --profile <name>     Prompt set: code | coherence (default: inferred from target)
   --pr <N|URL>         PR number or GitHub URL to review
   --base <branch>      Base branch for diff (default: develop)
   --rounds <N>         Number of review rounds (default: 3)
@@ -39,12 +44,15 @@ Examples:
   review-loop --criteria docs/PR_REVIEW_CRITERIA.md --pr 42
   review-loop --criteria docs/agentic/ --base develop
   review-loop --criteria criteria.md --pr 42 --rounds 2
+  review-loop --files docs/BUILD_PLAN.md --criteria "$(dirname "$0")/criteria/coherence.md"
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --criteria) CRITERIA="$2"; shift 2 ;;
+    --files)    FILES+=("$2"); shift 2 ;;
+    --profile)  PROFILE="$2"; shift 2 ;;
     --pr)       PR="$2"; shift 2 ;;
     --base)     BASE="$2"; shift 2 ;;
     --rounds)   ROUNDS="$2"; shift 2 ;;
@@ -118,6 +126,28 @@ print(''.join(kept), end='')
 "
 }
 
+# ── Target mode & profile ───────────────────────────────────────────────────
+#
+# Two target adapters: a git diff (code review) or a set of files read as-is
+# (plans, specs, design docs). Everything downstream — rounds, criteria, schema,
+# assembly — is identical; only what gets put in front of the models differs.
+
+if [[ ${#FILES[@]} -gt 0 ]]; then
+  MODE="files"
+  [[ -n "$PR" ]] && { echo "error: --files and --pr are mutually exclusive" >&2; exit 1; }
+else
+  MODE="diff"
+fi
+
+[[ -z "$PROFILE" ]] && { [[ "$MODE" == "files" ]] && PROFILE="coherence" || PROFILE="code"; }
+
+PROMPTS_DIR="$PROMPTS_ROOT/$PROFILE"
+if [[ ! -d "$PROMPTS_DIR" ]]; then
+  echo "error: unknown profile '$PROFILE' (no prompts at $PROMPTS_DIR)" >&2
+  echo "available: $(cd "$PROMPTS_ROOT" && ls -d */ 2>/dev/null | tr -d / | tr '\n' ' ')" >&2
+  exit 1
+fi
+
 # ── Diff acquisition ────────────────────────────────────────────────────────
 
 get_raw_diff() {
@@ -140,7 +170,22 @@ get_diff() {
   fi
 }
 
-DIFF=$(get_diff)
+get_files_content() {
+  local f
+  for f in "${FILES[@]}"; do
+    [[ -f "$f" ]] || { echo "error: file not found: $f" >&2; exit 1; }
+    # Line-numbered so findings can cite a location the author can jump to.
+    printf '### %s\n\n```\n' "$f"
+    awk '{ printf "%6d  %s\n", NR, $0 }' "$f"
+    printf '```\n\n'
+  done
+}
+
+if [[ "$MODE" == "files" ]]; then
+  DIFF=$(get_files_content)
+else
+  DIFF=$(get_diff)
+fi
 
 if [[ -z "$DIFF" ]]; then
   echo "No changes to review."
@@ -149,7 +194,13 @@ fi
 
 # ── Target label for artifact naming ────────────────────────────────────────
 
-if [[ -n "$PR" ]]; then
+if [[ "$MODE" == "files" ]]; then
+  if [[ ${#FILES[@]} -eq 1 ]]; then
+    TARGET="$(basename "${FILES[0]}" .md)"
+  else
+    TARGET="${#FILES[@]}-docs"
+  fi
+elif [[ -n "$PR" ]]; then
   TARGET="PR-${PR##*/}"
 else
   BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
@@ -169,16 +220,23 @@ if [[ "$DRY_RUN" == 1 ]]; then
   fi
   echo "review-loop dry run"
   echo "  criteria:  $CRITERIA_DESC"
+  echo "  profile:   $PROFILE"
   echo "  target:    $TARGET"
-  echo "  base:      $BASE"
+  if [[ "$MODE" == "files" ]]; then
+    echo "  files:     ${FILES[*]}"
+  else
+    echo "  base:      $BASE"
+  fi
   echo "  rounds:    $ROUNDS"
-  echo "  diff:      $DIFF_LINES lines"
+  echo "  content:   $DIFF_LINES lines"
   echo "  claude:    $CLAUDE_MODEL"
   echo "  codex:     $CODEX_MODEL"
-  if [[ "$INCLUDE_ALL" == 1 ]]; then
-    echo "  filter:    disabled (--include-all)"
-  else
-    echo "  filter:    excluding lock/generated files"
+  if [[ "$MODE" == "diff" ]]; then
+    if [[ "$INCLUDE_ALL" == 1 ]]; then
+      echo "  filter:    disabled (--include-all)"
+    else
+      echo "  filter:    excluding lock/generated files"
+    fi
   fi
   echo "  output:    $REVIEW_FILE"
   exit 0
@@ -203,7 +261,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "$DIFF" > "$WORK_DIR/diff.txt"
 
-echo "review-loop: $ROUNDS rounds, target=$TARGET, criteria=$CRITERIA"
+echo "review-loop: $ROUNDS rounds, profile=$PROFILE, target=$TARGET, criteria=$CRITERIA"
 
 # ── Round execution ─────────────────────────────────────────────────────────
 
@@ -321,6 +379,7 @@ fi
 python3 "$LIB" assemble \
   --round-files "${round_files[@]}" \
   --target "$TARGET" \
+  --profile "$PROFILE" \
   --criteria "$CRITERIA" \
   --output "$REVIEW_FILE"
 

@@ -88,6 +88,21 @@ case "$transcript" in
   *"/.claude/"*) acct_info="\033[35m⬢ personal\033[0m" ;;
 esac
 
+# Remote Control. There is no live-connection field in the payload and no
+# on-disk per-session state, so this reads the account's own setting instead:
+# `remoteControlAtStartup` means every session on this account starts the
+# bridge. That is configuration, not a live link — it will not follow a
+# per-session /remote-control toggle, and it keeps showing after a drop
+# (Claude Code prints its own "Remote Control disconnected" message then).
+# The config dir is transcript_path minus projects/<slug>/<id>.jsonl.
+rc_info=""
+if [ -n "$transcript" ]; then
+  cfg_dir=$(dirname "$(dirname "$(dirname "$transcript")")")
+  if [ "$(jq -r '.remoteControlAtStartup // false' "$cfg_dir/settings.json" 2>/dev/null)" = "true" ]; then
+    rc_info="\033[32m⟲ rc\033[0m"
+  fi
+fi
+
 # Model display name
 model_info=""
 if [ -n "$model" ]; then
@@ -138,6 +153,8 @@ parts=""
 printf "%b" "$parts"
 
 line3=""
-[ -n "$acct_info" ] && line3="${acct_info}"
-[ -n "$bg_info" ] && { [ -n "$line3" ] && line3="${line3} \033[90m│\033[0m ${bg_info}" || line3="${bg_info}"; }
+for seg in "$acct_info" "$rc_info" "$bg_info"; do
+  [ -z "$seg" ] && continue
+  if [ -n "$line3" ]; then line3="${line3} \033[90m│\033[0m ${seg}"; else line3="$seg"; fi
+done
 [ -n "$line3" ] && printf "\n%b" "$line3"

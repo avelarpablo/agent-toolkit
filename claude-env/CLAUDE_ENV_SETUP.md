@@ -88,7 +88,7 @@ refuses to run when two accounts resolve to the same directory.
 ```
 ~/Dev/shopstack/discount-genie-core (main)
 Claude Opus 5 │ Medium │ █░░░░░░░░░░░░░░ 7% 67.1k/1M
-⬢ shopstack │ ▶ 1 bg http://localhost:8899
+⬢ shopstack │ ⟲ rc │ ▶ 1 bg http://localhost:8899
 ```
 
 The URL is printed in full on purpose: terminals linkify it, so **cmd-click on
@@ -105,6 +105,7 @@ than `▶ 2 bg`, which says nothing about what is actually running.
 | model, effort | `model.id`, `effort.level` |
 | context bar + **tokens** | `context_window.used_percentage`, `total_input_tokens`, `context_window_size` |
 | **account** | derived from `transcript_path` |
+| **remote control** | account's `remoteControlAtStartup` setting |
 | **background tasks** | `bin/claude-bg --short` |
 
 The last two are not in the payload — they are derived. The details matter if
@@ -201,17 +202,39 @@ It filters by process type and port range because macOS Control Center squats
 5000 and 7000, and Spotify/Loom/Zed hold high ports — a naive listener dump is
 mostly noise. Tune with `DEVPORTS_MAX_PORT` and `DEVPORTS_IGNORE`.
 
-### What is *not* available
+**Remote Control** (`⟲ rc`) is a **configuration** badge, not a live link —
+read the limits before trusting it.
 
-**Remote Control state.** There is no way to show whether the current session
-has Remote Control on. Verified against a live session: the payload has 16
-top-level keys and none of them is remote/control related; `session-env/<id>/`
-is empty; and `.claude.json` carries only lifetime flags
-(`hasUsedRemoteControl`, `remoteDialogSeen`) that say "you have used it before",
-not "it is on now". Inferring it from the process's network connections is
-possible in principle but not reliable — a `claude` process holds ~70
-established connections, and a badge that says ON when it is off is worse than
-no badge. If Claude Code adds a payload field, this is a two-line change.
+There is no live-connection signal to read. Verified against live sessions: the
+payload has 16 top-level keys and none is remote/control related;
+`session-env/<id>/` is empty; `.claude.json` holds only lifetime flags
+(`hasUsedRemoteControl`, `remoteDialogSeen`) meaning "you have used it before",
+not "it is on now"; and with Remote Control off, no `claude` process listens on
+a TCP port or holds a remote-ish unix socket. Inferring it from network
+connections is possible in principle but not reliable — a `claude` process
+holds ~70 established connections, and a badge that reads ON while it is off is
+worse than no badge.
+
+So the badge reads the account's own `remoteControlAtStartup` setting instead
+(config dir resolved from `transcript_path`, same trick as the account badge).
+That setting is described by the CLI as *"Start Remote Control bridge
+automatically each session"*, so when it is true, every session on that account
+does start with Remote Control.
+
+What it therefore does **not** do:
+
+- it will not follow a per-session `/remote-control` toggle;
+- it keeps showing after a disconnect — Claude Code prints its own
+  `Remote Control disconnected — run /remote-control to reconnect` at that
+  point, which is the authoritative event.
+
+`remoteControlAtStartup` only works at **user scope**: project or local
+settings can turn it off but never on. `settings.base.json` writes user scope,
+so the setup script is the right place for it. Claude Code treats it as a
+security-sensitive setting — flipping it to `false` there and re-running turns
+both the behaviour and the badge off everywhere.
+
+### What is *not* available
 
 ### Inspecting the payload
 

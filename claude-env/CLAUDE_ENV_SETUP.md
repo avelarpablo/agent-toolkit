@@ -87,7 +87,7 @@ refuses to run when two accounts resolve to the same directory.
 
 ```
 ~/Dev/shopstack/discount-genie-core (main)
-Claude Opus 5 │ Medium │ █░░░░░░░░░░░░░░ 7% 67.1k/1M
+Claude Opus 4.8 │ Medium │ █░░░░░░░░░░░░░░ 7% 67.1k/1M
 ⬢ shopstack │ ⟲ rc │ ▶ 1 bg http://localhost:8899
 ```
 
@@ -108,7 +108,7 @@ than `▶ 2 bg`, which says nothing about what is actually running.
 | **remote control** | account's `remoteControlAtStartup` setting |
 | **background tasks** | `bin/claude-bg --short` |
 
-The last two are not in the payload — they are derived. The details matter if
+The last three are not in the payload — they are derived. The details matter if
 you ever change them:
 
 **Account.** The payload has no account, organization or config-dir field, and

@@ -105,7 +105,7 @@ than `▶ 2 bg`, which says nothing about what is actually running.
 | model, effort | `model.id`, `effort.level` |
 | context bar + **tokens** | `context_window.used_percentage`, `total_input_tokens`, `context_window_size` |
 | **account** | derived from `transcript_path` |
-| **remote control** | account's `remoteControlAtStartup` setting |
+| **remote control** | this session's pid in `.claude.json` placeholders |
 | **background tasks** | `bin/claude-bg --short` |
 
 The last three are not in the payload — they are derived. The details matter if
@@ -202,37 +202,30 @@ It filters by process type and port range because macOS Control Center squats
 5000 and 7000, and Spotify/Loom/Zed hold high ports — a naive listener dump is
 mostly noise. Tune with `DEVPORTS_MAX_PORT` and `DEVPORTS_IGNORE`.
 
-**Remote Control** (`⟲ rc`) is a **configuration** badge, not a live link —
-read the limits before trusting it.
+**Remote Control** (`⟲ rc`) is per session, and lights only for the session
+that actually holds a bridge.
 
-There is no live-connection signal to read. Verified against live sessions: the
-payload has 16 top-level keys and none is remote/control related;
-`session-env/<id>/` is empty; `.claude.json` holds only lifetime flags
-(`hasUsedRemoteControl`, `remoteDialogSeen`) meaning "you have used it before",
-not "it is on now"; and with Remote Control off, no `claude` process listens on
-a TCP port or holds a remote-ish unix socket. Inferring it from network
-connections is possible in principle but not reliable — a `claude` process
-holds ~70 established connections, and a badge that reads ON while it is off is
-worse than no badge.
+The payload has no field for it, `session-env/<id>/` is empty, and with Remote
+Control off no `claude` process listens or holds a remote unix socket. What
+does exist: starting a bridge records a placeholder in the account's
+`.claude.json`, keyed by cloud session id and holding the **owning pid**:
 
-So the badge reads the account's own `remoteControlAtStartup` setting instead
-(config dir resolved from `transcript_path`, same trick as the account badge).
-That setting is described by the CLI as *"Start Remote Control bridge
-automatically each session"*, so when it is true, every session on that account
-does start with Remote Control.
+```json
+"replBridgePlaceholders": { "cse_01Ej…": { "pid": 94345, "procStart": "…" } }
+```
 
-What it therefore does **not** do:
+So "is this session bridged" becomes "does my own `claude` pid appear there" —
+the status line walks up its parent chain to find that pid. Claude Code deletes
+the entry on disconnect and sweeps entries whose pid is gone.
 
-- it will not follow a per-session `/remote-control` toggle;
-- it keeps showing after a disconnect — Claude Code prints its own
-  `Remote Control disconnected — run /remote-control to reconnect` at that
-  point, which is the authoritative event.
+A first attempt read the account's `remoteControlAtStartup` setting instead.
+That was wrong and is worth remembering: the setting is **account-wide**, so
+every session showed the badge whether or not it had a bridge — including after
+a toggle-off. A config value is not a live signal.
 
-`remoteControlAtStartup` only works at **user scope**: project or local
-settings can turn it off but never on. `settings.base.json` writes user scope,
-so the setup script is the right place for it. Claude Code treats it as a
-security-sensitive setting — flipping it to `false` there and re-running turns
-both the behaviour and the badge off everywhere.
+`remoteControlAtStartup` is now `false` in the base, so sessions do not start a
+bridge on their own and `/remote-control` stays a deliberate act. It only works
+at user scope anyway: project or local settings can turn it off but never on.
 
 ### What is *not* available
 

@@ -88,17 +88,33 @@ case "$transcript" in
   *"/.claude/"*) acct_info="\033[35m⬢ personal\033[0m" ;;
 esac
 
-# Remote Control. There is no live-connection field in the payload and no
-# on-disk per-session state, so this reads the account's own setting instead:
-# `remoteControlAtStartup` means every session on this account starts the
-# bridge. That is configuration, not a live link — it will not follow a
-# per-session /remote-control toggle, and it keeps showing after a drop
-# (Claude Code prints its own "Remote Control disconnected" message then).
-# The config dir is transcript_path minus projects/<slug>/<id>.jsonl.
+# Remote Control, per session. The payload has no field for it, but starting a
+# bridge records a placeholder in the account's .claude.json keyed by cloud
+# session id and holding the owning pid:
+#   "replBridgePlaceholders": { "cse_…": { "pid": 94345, "procStart": …} }
+# So the question "is THIS session bridged" is: does my own claude pid appear
+# there. Reading the account's `remoteControlAtStartup` setting instead — the
+# first attempt — was wrong: it is account-wide, so every session showed the
+# badge whether or not it had a bridge.
+# Claude Code deletes the entry on disconnect and sweeps entries whose pid is
+# gone; if a toggle-off ever leaves one behind, the badge lingers until then.
 rc_info=""
 if [ -n "$transcript" ]; then
   cfg_dir=$(dirname "$(dirname "$(dirname "$transcript")")")
-  if [ "$(jq -r '.remoteControlAtStartup // false' "$cfg_dir/settings.json" 2>/dev/null)" = "true" ]; then
+  # This script is a child of the claude process that renders it.
+  rc_pid=""
+  p=$$
+  i=0
+  while [ "$i" -lt 6 ]; do
+    parent=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    { [ -z "$parent" ] || [ "$parent" -le 1 ] 2>/dev/null; } && break
+    if [ "$(ps -o comm= -p "$parent" 2>/dev/null | tr -d ' ')" = "claude" ]; then rc_pid="$parent"; break; fi
+    p="$parent"
+    i=$((i + 1))
+  done
+  if [ -n "$rc_pid" ] && jq -e --argjson pid "$rc_pid" \
+      '[(.replBridgePlaceholders // {})[] | select(.pid == $pid)] | length > 0' \
+      "$cfg_dir/.claude.json" >/dev/null 2>&1; then
     rc_info="\033[32m⟲ rc\033[0m"
   fi
 fi

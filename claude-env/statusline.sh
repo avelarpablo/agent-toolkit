@@ -23,6 +23,7 @@ effort=$(echo "$input" | jq -r '.effort.level // ""')
 tok_used=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
 tok_max=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 transcript=$(echo "$input" | jq -r '.transcript_path // ""')
+style=$(echo "$input" | jq -r '.output_style.name // ""')
 
 # Shorten home directory to ~
 home="$HOME"
@@ -147,6 +148,15 @@ if [ -n "$effort" ]; then
   effort_info="\033[33m${eff_display}\033[0m"
 fi
 
+# Output style flag. "default" (or empty) is the normal style and gets no badge;
+# any custom style shows a badge, with Concise called out in cyan.
+style_info=""
+case "$style" in
+  ""|default|Default) ;;
+  Concise) style_info="\033[36m✎ Concise\033[0m" ;;
+  *)       style_info="\033[90m✎ ${style}\033[0m" ;;
+esac
+
 # Background tasks started by any agent, in any terminal, on either account.
 # Cached briefly so the status line does not shell out to ps/lsof on every
 # render. Detail view (ports, logs, owning session): `claude-bg`.
@@ -166,6 +176,7 @@ parts=""
 [ -n "$model_info" ] && parts="${model_info}"
 [ -n "$effort_info" ] && parts="${parts} \033[90m│\033[0m ${effort_info}"
 [ -n "$ctx_info" ] && parts="${parts} \033[90m│\033[0m ${ctx_info}"
+[ -n "$style_info" ] && parts="${parts} \033[90m│\033[0m ${style_info}"
 printf "%b" "$parts"
 
 line3=""

@@ -85,8 +85,9 @@ thing is a **cycle**, not a line:
 6. **Mechanism vs. policy.** Runners own primitives; skills own pipeline knowledge; scripts own
    deterministic steps. See [Layering](#layering).
 7. **Main stays pristine.** All build work happens in worktrees; `main` is only ever touched by the
-   final verified promote. Human verification happens on the feature's `feat/…` worktree, one
-   feature at a time.
+   final verified promote. Human verification happens on the worktree of the branch that will
+   promote — the feature's `feat/…` for multi-slice work, the unit's own branch for single-unit
+   work — one promotable unit at a time.
 8. **The first version is never clean.** Build to make it work, then a separate loop refactors
    it to standard.
 9. **Frequent Intentional Compaction (FIC).** Keep any session under ~50% context (~100k
@@ -96,6 +97,10 @@ thing is a **cycle**, not a line:
     intent. This applies to **documents too**: a plan gets the same adversarial pass as a diff, via
     the [critique loop](#the-critique-loop--one-engine-two-targets). A defect caught in the plan is
     the cheapest defect there is.
+11. **No artifact is final until a second family has reviewed it.** Principle 10 says *pair the
+    families*; this says *where the pairing is enforced* — every stage that emits an artifact passes
+    a [gate](#stage-gates--no-artifact-is-final-unreviewed) before that artifact is published and the
+    stage advances. The gate is not advisory: unresolved blockers hold the stage.
 
 ---
 
@@ -322,6 +327,34 @@ this system's own spec before the loop existed.
 **On demand now, a gate later** — `to-prd`/`to-design-doc` will run it pre-publish once the criteria
 have proven themselves on real documents.
 
+### Stage gates — no artifact is final unreviewed
+
+Principle 11. Every stage that produces an artifact runs it through the
+[critique loop](#the-critique-loop--one-engine-two-targets) before publishing. The pattern is always
+the same — **artifact + criteria + a second family → blockers must be zero** — and the stages differ
+only in *which criteria* and *how many rounds*.
+
+| Stage | Artifact | Criteria | Rounds |
+|---|---|---|---|
+| PRD grill | the PRD | success criteria measurable? scope bounded? implementation detail leaking in? | 1–2 |
+| Design Doc grill | the Design Doc | claims verified against code? alternatives considered? coherence | 3 |
+| Slicing | slice + implementation plan | independently shippable? demo command real? plan executable? | 1 |
+| Refactor | the diff | per-repo standards | 3 |
+| Verification | the verification report | every success criterion actually exercised? | 1 |
+
+**Rounds scale with stakes**, and this is the same primitive throughout: `review-loop` at N rounds
+is the dialogue; ralph's inline Codex gate is the same thing at one round. A cheap stage pays one
+round; a Design Doc that will spawn a dozen slices pays three.
+
+**The criteria are the work, not the wiring.** A gate with vague criteria produces vague findings
+and trains you to ignore it. Each criteria doc is written like
+[`coherence.md`](../runners/review-loop/criteria/coherence.md): numbered rules, explicit
+out-of-scope, and an explicit ban on padding.
+
+**Why gates and not good intentions:** the failure mode is finishing an artifact, feeling done, and
+publishing it — precisely when a second opinion is most valuable and least wanted. Making it a
+stage transition removes the choice.
+
 ### Worktrees & artifacts
 
 One branch + worktree per slice (or per Implementation Plan for small work). Loops run inside;
@@ -363,9 +396,25 @@ design branch do.
 | `task/` | one small, self-contained unit (no `feat/…`) | main | build (dev → verify); merged straight to main; torn down |
 | `fix/` | a verification finding or feedback-loop bug (`bug`) | the `feat/…`/slice if in-scope & open, else main | merged; torn down |
 
+**The standard is [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)** —
+one long-lived branch (`main`), short-lived branches off it, merge-to-`main` as the deploy trigger.
+Not GitFlow: GitFlow is *defined* by a second long-lived branch, and its `hotfix` exists to merge
+into **both** `master` and `develop`. With no `develop`, that double merge — the entire point —
+collapses into an ordinary merge to `main`. Borrowing GitFlow's names without its branches would
+mislead everyone who knows GitFlow. **If a project gains `develop`/`staging`, adopt GitFlow properly
+at that point**, and `hotfix`/`bugfix` regain real meaning because there are then two targets to
+distinguish. Until then there is one target, so the distinction carries no information.
+
+Type prefixes are therefore **descriptive** (the Conventional Commits vocabulary), not permissions.
+
 The **integration branch (`feat/…`) exists only when a feature has ≥2 slices**. Single-unit work
-(a `task/…`, a lone `slice/…`, a one-off `fix/…`) skips it and goes straight to `main`. `main` and
-any deploy branches are protected; only a verified `feat/…` or `task/…` promotes into `main`.
+(a `task/…`, a lone `slice/…`, a one-off `fix/…`) skips it and merges to `main` once verified.
+
+**What protects `main` is verification, not the prefix.** `main` and any deploy branches are
+protected, and **`main` accepts only a branch that has passed `stage:verify`** — whatever its type.
+Stating the invariant directly (rather than as a whitelist of permitted prefixes) is what keeps
+principle 7 true: the whitelist had already drifted out of sync with the branch table, permitting
+and forbidding `fix/ → main` one line apart.
 
 The **type vocabulary is orchestrator policy**, not ralph's — ralph only needs "you're on a
 non-protected branch." This supersedes ad-hoc conventions (`feature/*`, `standards/…`). Canonical
@@ -409,7 +458,7 @@ merges into `feat/…`; **feature-level** verify and docs run on the feature (PR
 
 | Stage label | Meaning | Transition trigger |
 |---|---|---|
-| `stage:verify` | **human gate** — verify the assembled feature on the `feat/…` worktree | you sign off |
+| `stage:verify` | **human gate** — verify on the worktree of the branch that will promote (`feat/…` for a multi-slice feature; the unit's own branch otherwise) | you sign off |
 | `stage:docs` | feature-level `sync-docs` pass on `feat/…` | docs reviewed → **promote `feat → main`** (deploy trigger) → close |
 
 A waiting slice carries the existing `blocked` label. These are **canonical** names; real strings per
@@ -458,7 +507,8 @@ once**. The orchestrator schedules across slices respecting four conflict dimens
 | **Runtime resources (QA)** | two QA loops clash on ports / test DB | **serialize QA (cap = 1) to start**; dev/refactor parallelize |
 
 Per-worktree runtime isolation (dynamic ports, DB-per-branch) is a later upgrade. **Verification
-is always serial** — one feature at a time, by you, on the `feat/…` worktree.
+is always serial** — one promotable unit at a time, by you, on the worktree of the branch that
+will promote (`feat/…` for a multi-slice feature, the unit's own branch otherwise).
 
 **The orchestrator: a manual pass first.** You invoke it; it reads the board and, for every issue
 it can legally advance (respecting conflicts + caps), launches the next background loop and flips
@@ -591,6 +641,18 @@ own layout/filter:
 - **Roadmap view** = the **planning altitude** — wayfinder maps, PRDs, Design Docs on a timeline
   (the "what's coming / 6-month" picture). Plus table views filtered by feature (PRD), assignee, or
   altitude for team lanes.
+
+**Provisioned, not hand-built.** A repo's Project is created by `setup-agent-skills` alongside its
+labels — every project the system touches gets its board without a manual step. The orchestrator
+then keeps Status in sync as it flips `stage:` labels.
+
+**GitHub issue *types* vs `kind:` labels — verified, 2026-08.** Issue types are an
+**organization-level** feature: an org (`OutputLabs`) exposes `Task`/`Bug`/`Feature`, while a
+personal-account repo returns `issueTypes: null`. So **`kind:` labels are canonical** — they are the
+only mechanism that works on every repo. Where an org *does* have types, `setup-agent-skills`
+**mirrors** `kind:` onto the native type (`kind:bug` → `Bug`, `kind:wishlist` → `Feature`) for the
+nicer native UI. `kind:tech-debt` has no native equivalent and stays label-only. The label is the
+source of truth in both cases; the type is a projection.
 
 **The boundary is `stage:ready`:** an item lives in the roadmap while it's being shaped (map → PRD →
 Design Doc); the moment it's cut into a buildable unit and labeled `stage:ready`, it appears on the

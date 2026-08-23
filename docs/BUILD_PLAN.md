@@ -4,7 +4,7 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **0.1, 0.1a, 0.1b done**; work-kind model decided (1.1a). Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **0.1, 0.1a, 0.1b done**; work-kind model (1.1a), branch standard and stage gates decided. Phase 0 is hand-built; the system starts self-hosting after Phase 3.
 
 ## The bootstrapping principle
 
@@ -93,8 +93,11 @@ profile-aware assembly. Rationale:
   the same shape — `review-loop` is an N-round two-family dialogue; ralph is a mutating loop with a
   single-shot Codex gate. The shared primitive is "critique an artifact against criteria with a
   second family"; `review-loop` was already one adapter away from serving both targets.
-- **On demand now, gate later** — wire it into `to-prd`/`to-design-doc` at 0.3 once the criteria have
-  proven themselves, rather than hardening untested criteria into a mandatory gate.
+- ~~**On demand now, gate later**~~ — **SUPERSEDED.** The gate is now principle 11: *every* stage
+  artifact passes a two-family gate before publishing, not just the 0.3 producers. Each stage's
+  criteria doc is authored in that stage's own build item (see the gate table in
+  [PROCESS.md → Stage gates](PROCESS.md#stage-gates--no-artifact-is-final-unreviewed)); `coherence.md`
+  is the first of them and the template for the rest.
 - **Criteria grade coherence, not judgment** — C-1…C-8 find contradictions, duplicate concepts,
   orphaned references, ordering violations, unfalsifiable criteria, resolved-not-decided questions,
   unstated load-bearing assumptions, scope leaks. Disagreeing with a recorded decision is explicitly
@@ -112,8 +115,9 @@ One engine, parameterized by a profile; checkpoints via 0.1.
   them apart from the start; the engine has to be usable under a flow that isn't this one.
 
 ### 0.3 `to-prd` + `to-design-doc` producers
-Synthesize the grill's working file into published tracker issues. Candidate home for the coherence
-gate from 0.1b, once its criteria have proven themselves.
+Synthesize the grill's working file into published tracker issues. **Both producers gate before
+publishing** (principle 11): `to-prd` against PRD criteria (1–2 rounds), `to-design-doc` against
+Design-Doc criteria (3 rounds). Authoring those two criteria docs is part of this item.
 - **done-when:** `to-prd` publishes a PRD (what/why + **success criteria**, no impl detail);
   `to-design-doc` publishes a Design Doc (how, verified, prototype reference) linked to its PRD.
   Neither interviews — they synthesize the working file.
@@ -131,6 +135,12 @@ The mechanics that let work flow as issues + labels + branches + worktrees.
   the `needs:human` modifier, and documents the `<type>/<issue#>-<slug>` branch convention (incl.
   `feat/`), mapped to real per-repo strings.
 - **needs:** nothing (can parallel Phase 0).
+- **also provisions the GitHub Project** (board by `stage:*` + roadmap) so no repo needs a manual
+  board, and **mirrors `kind:` onto native issue types where the owner is an org** — verified
+  2026-08: types are org-only (`OutputLabs` exposes Task/Bug/Feature; a personal-account repo returns
+  `issueTypes: null`), so labels stay canonical and the type is a projection.
+- **branch conventions follow [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)**,
+  with `main` accepting only what passed `stage:verify` — prefixes are descriptive, not permissions.
 - **↪** Tracker/label/branch vocabulary setup (**adapt** `setup-agent-skills`).
 - **includes the triage merge:** delete `ready-for-agent` (it *is* `stage:ready`); convert
   `ready-for-human` into the `needs:human` modifier; keep `needs-info`; `wontfix` → closed with a

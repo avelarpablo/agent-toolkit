@@ -193,7 +193,9 @@ Deterministic mechanism the orchestrator will call.
 
 ### 2.2 Refactor loop wiring
 - **done-when:** an orchestrated chain runs `review-loop` (find) → `ralph` (fix, refactor prompt) →
-  re-check until `review-loop` returns **zero blockers**. Maintainability/pattern quality is gated
+  re-check until `review-loop` returns **zero blockers, or a round cap is hit** — at which point it
+  stops, flips `needs:human`, and reports what it could not fix (principle 12: every cycle has two
+  exits). Maintainability/pattern quality is gated
   the only way it can be tested — by encoding pattern violations as blockers in the `review-loop`
   criteria file, not by an unfalsifiable "applies the best design pattern" clause. `ralph` fix-actor
   reused with a refactor prompt.
@@ -231,7 +233,8 @@ Deterministic mechanism the orchestrator will call.
 ## Phase 4 — Tail, front door & tracking
 
 ### 4.1 Verification — adapt `verify-prd`
-- **done-when:** runs feature-level on the `feat/…` worktree against PRD success criteria, posts a
+- **done-when:** runs feature-level on the worktree of the branch that will promote, against PRD
+  success criteria, with a **re-verify cap** (hold with `needs:human` rather than cycling); posts a
   verification report to the tracker, and loops findings back (fixes → re-verify; out-of-scope →
   linked task issues). `stage:verify` holds until clean.
 - **needs:** 3.1. **↪** Feature-level verification (**adapt** `verify-prd`).
@@ -253,7 +256,13 @@ Deterministic mechanism the orchestrator will call.
 ### 4.4 Progress & tracking
 - **done-when:** a GitHub Project (board by `stage:*` + roadmap for planning) is set up and kept in
   sync by the orchestrator's Status writes; a `status`/standup skill narrates progress from the
-  tracker. `trello` skill + `verify-prd` Trello sync **removed**.
+  tracker **and reports the quality counter-metrics alongside throughput** — cost per accepted
+  change (flagging acceptance under ~50%), escaped defects (`kind:bug` against verified features),
+  and human-rework rate (`needs:human` frequency). `trello` skill + `verify-prd` Trello sync
+  **removed**.
+- **why the counter-metrics:** a board that only measures movement is a metric worth gaming — a
+  pipeline merging slices fast while escaped defects climb looks excellent on it. See
+  [PROCESS.md → Grounding](PROCESS.md#grounding--anchors-caps-and-counter-metrics).
 - **needs:** 3.1 (the orchestrator pass exists). This item **adds** the Project Status write to
   that pass — 3.1 does not depend on the Project. **↪** GitHub Projects view; `status` skill; remove Trello.
 

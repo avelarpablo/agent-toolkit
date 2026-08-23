@@ -97,10 +97,18 @@ thing is a **cycle**, not a line:
     intent. This applies to **documents too**: a plan gets the same adversarial pass as a diff, via
     the [critique loop](#the-critique-loop--one-engine-two-targets). A defect caught in the plan is
     the cheapest defect there is.
-11. **No artifact is final until a second family has reviewed it.** Principle 10 says *pair the
-    families*; this says *where the pairing is enforced* — every stage that emits an artifact passes
-    a [gate](#stage-gates--no-artifact-is-final-unreviewed) before that artifact is published and the
-    stage advances. The gate is not advisory: unresolved blockers hold the stage.
+11. **No artifact is final until a second family has reviewed it — and every gate names its
+    anchor.** Principle 10 says *pair the families*; this says *where the pairing is enforced* —
+    every stage that emits an artifact passes a
+    [gate](#stage-gates--no-artifact-is-final-unreviewed) before that artifact is published and the
+    stage advances. But a second model is **not** an external verifier: models sharing a context can
+    agree at industrial scale. So each gate must declare the **reality anchor** it rests on — a test
+    that ran, a build that compiled, a human who signed off. Where an anchor exists the gate is
+    binding; where none does (documents), the gate is **advisory input to your judgment**, never a
+    green light. See [Grounding](#grounding--anchors-caps-and-counter-metrics).
+12. **Every cycle has two exits.** Success is one. A hard cap is the other. A loop whose only exit is
+    success will, on a blocker it cannot fix, run until it is stopped by hand — and bill silently
+    the whole way.
 
 ---
 
@@ -263,7 +271,9 @@ separate refactor loop, which owns the different concern of structure + patterns
 prompt/role.
 
 **Refactor loop.** Not a new runner — **orchestrator policy chaining existing runners**:
-`review-loop` (find) → `ralph` (fix) → `review-loop` (re-check) → … until zero blockers.
+`review-loop` (find) → `ralph` (fix) → `review-loop` (re-check) → … until zero blockers **or the
+round cap is hit** — then it stops, flips `needs:human`, and reports what it could not fix
+(principle 12).
 `review-loop` stays a pure critic; `ralph` stays the only thing that writes code. **This loop also
 owns design patterns** — agents tend not to reach for proper patterns, so this is where the code is
 assessed and refactored to the **best design pattern for the feature and for maintainability**.
@@ -288,9 +298,14 @@ incremental per-slice verification. **The outcome lands in the tracker**, not ju
 - At close: a **verification report** posted to the issue (what was tested, pass/fail, findings).
 - **Findings loop back**: fixes re-run the relevant build loop on the slice → re-merge → re-verify;
   out-of-scope findings spawn **linked task issues**. `stage:verify` stays until the feature passes
-  clean.
+  clean, or until the re-verify cap is hit — then it holds with `needs:human` rather than cycling.
 
-**stage:docs — the tail.** After the feature passes verification (and before promoting to `main`),
+**stage:docs — the tail, and the debt payment.** This stage exists because of **comprehension
+debt**: every AFK loop widens the gap between what the repo contains and what you understand, and
+that gap compounds until the day you must debug something nobody has read. Docs are how it is paid
+down.
+
+**stage:docs — the mechanics.** After the feature passes verification (and before promoting to `main`),
 one **feature-level** `sync-docs` pass on the `feat/…` branch. It reads **git diffs + the
 verification report(s) + the issue tree** (not live conversation — long gone by now → FIC), so docs
 reflect verified reality *including* verification-driven changes. AFK-able; you give the doc changes
@@ -334,13 +349,15 @@ Principle 11. Every stage that produces an artifact runs it through the
 the same — **artifact + criteria + a second family → blockers must be zero** — and the stages differ
 only in *which criteria* and *how many rounds*.
 
-| Stage | Artifact | Criteria | Rounds |
-|---|---|---|---|
-| PRD grill | the PRD | success criteria measurable? scope bounded? implementation detail leaking in? | 1–2 |
-| Design Doc grill | the Design Doc | claims verified against code? alternatives considered? coherence | 3 |
-| Slicing | slice + implementation plan | independently shippable? demo command real? plan executable? | 1 |
-| Refactor | the diff | per-repo standards | 3 |
-| Verification | the verification report | every success criterion actually exercised? | 1 |
+| Stage | Artifact | Criteria | Rounds | **Reality anchor** |
+|---|---|---|---|---|
+| PRD grill | the PRD | success criteria measurable? scope bounded? implementation detail leaking in? | 1–2 | **none** → advisory; you decide |
+| Design Doc grill | the Design Doc | claims verified against code? alternatives considered? coherence | 3 | partial — claims checked **against the code** |
+| Slicing | slice + implementation plan | independently shippable? demo command real? plan executable? | 1 | the **demo command runs** |
+| Dev | the diff | correctness | 1 (inline) | **unit + integration tests pass** |
+| Refactor | the diff | per-repo standards | 3 | **tests still pass** after each fix |
+| QA | the assembled app | e2e vs the frozen prototype | — | **e2e suite passes**; screenshots compared |
+| Verification | the verification report | every success criterion actually exercised? | 1 | **you signed off** |
 
 **Rounds scale with stakes**, and this is the same primitive throughout: `review-loop` at N rounds
 is the dialogue; ralph's inline Codex gate is the same thing at one round. A cheap stage pays one
@@ -354,6 +371,45 @@ out-of-scope, and an explicit ban on padding.
 **Why gates and not good intentions:** the failure mode is finishing an artifact, feeling done, and
 publishing it — precisely when a second opinion is most valuable and least wanted. Making it a
 stage transition removes the choice.
+
+### Grounding — anchors, caps and counter-metrics
+
+The system is a directed graph of loops: stages are nodes, label transitions are edges, the
+orchestrator is the runtime, and several edges cycle (refactor, verification findings). Graphs of
+agents fail in a characteristic way — **circularly**. Reviewers everywhere, every node agreeing,
+nothing touching reality. A graph without anchors is a larger hallucination with better project
+management.
+
+Three defences, structural rather than a matter of care:
+
+**1. Reality anchors.** Some evidence must come from outside the agents: a test that actually ran, a
+build that compiled, an e2e suite against the running app, a human who looked. Every gate in the
+table above declares its anchor — and the honest entries are the ones that declare **none**. A
+document gate has no test that can fail, so it informs your judgment instead of replacing it. Two
+model families are *more* independent than one, not independent.
+
+**2. Hard caps (principle 12).** Every cycle declares its second exit:
+
+| Cycle | Success exit | Hard cap |
+|---|---|---|
+| Dev loop | implementation plan complete, tests pass | `ralph --max` iterations |
+| Refactor loop | `review-loop` returns zero blockers | max find→fix rounds, then escalate |
+| QA loop | e2e written and passing | max attempts, then escalate |
+| Verification findings | feature passes clean | max re-verify rounds, then escalate |
+
+Hitting a cap is **not** a failure to hide — it flips `needs:human` and reports what it could not
+resolve. Silent looping is the failure; a cap is how the loop tells the truth.
+
+**3. Counter-metrics.** The board measures throughput — issues advancing through stages. Optimise
+throughput alone and Goodhart's law does the rest: a pipeline that merges slices quickly while
+escaped defects climb looks *excellent* on a stage board. So progress reporting pairs every
+throughput number with a quality number (see [Progress & tracking](#progress--tracking)).
+
+**Comprehension debt** is the standing cost of an AFK pipeline: the faster loops ship code you did
+not write, the wider the gap between what the repo contains and what you understand. That gap is
+what `stage:docs`, `CONTEXT.md` and the ADRs exist to pay down — not bureaucracy, debt service. It
+is also why verification stays a **human** gate: reading the assembled feature is how you keep
+contact with what was built.
 
 ### Worktrees & artifacts
 
@@ -641,6 +697,13 @@ own layout/filter:
 - **Roadmap view** = the **planning altitude** — wayfinder maps, PRDs, Design Docs on a timeline
   (the "what's coming / 6-month" picture). Plus table views filtered by feature (PRD), assignee, or
   altitude for team lanes.
+
+**Throughput needs a counterweight.** A stage board reports movement, and movement alone is a metric
+worth gaming. Progress reporting therefore pairs it with quality signals — **cost per accepted
+change** (an acceptance rate under ~50% means you are doing the review work the loop was meant to
+remove), **escaped defects** (`kind:bug` filed against already-verified features), and
+**human-rework rate** (how often `needs:human` fires). These reveal a pipeline shipping fast and
+wrong; the board alone never will.
 
 **Provisioned, not hand-built.** A repo's Project is created by `setup-agent-skills` alongside its
 labels — every project the system touches gets its board without a manual step. The orchestrator

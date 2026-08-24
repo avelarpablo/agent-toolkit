@@ -461,7 +461,9 @@ mislead everyone who knows GitFlow. **If a project gains `develop`/`staging`, ad
 at that point**, and `hotfix`/`bugfix` regain real meaning because there are then two targets to
 distinguish. Until then there is one target, so the distinction carries no information.
 
-Type prefixes are therefore **descriptive** (the Conventional Commits vocabulary), not permissions.
+Type prefixes are therefore **descriptive**, not permissions — and they are **our** vocabulary, not
+[Conventional Commits](https://www.conventionalcommits.org/), which governs commit *messages*.
+`feat/` and `fix/` happen to coincide; `slice/`, `design/` and `task/` have no CC equivalent.
 
 The **integration branch (`feat/…`) exists only when a feature has ≥2 slices**. Single-unit work
 (a `task/…`, a lone `slice/…`, a one-off `fix/…`) skips it and merges to `main` once verified.
@@ -715,6 +717,36 @@ remove), **escaped defects** (`kind:bug` filed against already-verified features
 **human-rework rate** (how often `needs:human` fires). These reveal a pipeline shipping fast and
 wrong; the board alone never will.
 
+**The Project is org-level and spans repos.** GitHub Projects (v2) belong to a **user or
+organization, not a repository** — one project can hold issues from many repos, and one repo can be
+linked to many projects. That fits the umbrella-repo pattern directly:
+
+```
+org project "Discount Genie"
+  ├─ core repo      → PRDs, Design Docs, wayfinder maps   (the planning altitude)
+  ├─ frontend repo  → slice issues                        (the build phase)
+  └─ backend repo   → slice issues                        (the build phase)
+```
+
+The PRD is the parent issue in the umbrella repo; slices are children in the code repos; everything
+appears on one board. This is the feature/slice model expressed across repositories.
+
+**One project, audience views — not two projects.** The planning altitude (product, design,
+architecture) and the build phase (dev) are different audiences with different questions, and views
+separate them for free. Two *projects* would split the one issue that lives in both worlds — the
+feature issue is born as a PRD, carries `stage:design`, and later carries `stage:verify` and
+`stage:docs` — giving it two Status fields to drift apart, which is the second-source-of-truth
+problem that ruled out an external board in the first place. Split into separate projects only when
+separate **teams** need separate **access**; merging two drifted Status fields later is far harder
+than splitting a view.
+
+| View | Audience | Filter |
+|---|---|---|
+| **Roadmap** | product / design / architecture | before `stage:ready` — maps, PRDs, Design Docs |
+| **Backlog** | dev — what can I pick up | `stage:ready`, ordered |
+| **Board** | dev — what is in flight | `stage:dev` → `stage:docs` |
+| **Inbox** | triage | has `kind:`, no `stage:` |
+
 **Provisioned, not hand-built.** A repo's Project is created by `setup-agent-skills` alongside its
 labels — every project the system touches gets its board without a manual step. The orchestrator
 then keeps Status in sync as it flips `stage:` labels.
@@ -741,6 +773,31 @@ a human one: an agent queries the tracker/Project (`gh` + GraphQL) and produces 
 demand — *"3 features in flight: A in QA, B in refactor (2/3 slices), C blocked on #47; 2 awaiting
 your verification."* Same canonical state, no new data. **Trello is dropped** (retire the `trello`
 skill and `verify-prd`'s Trello sync) in favor of Projects.
+
+### Standards — enforced, configured, or yours
+
+Installing this process into a project raises a question the design has to answer: **which standards
+does the system impose, and which does the project choose?** One test decides it:
+
+> **Does a script or the orchestrator parse it?**
+
+| Tier | Rule | Examples |
+|---|---|---|
+| **1 · Enforced shape** | mechanism depends on it; a project that changes it breaks the system | branch format `<type>/<issue#>-<slug>` and its type set · the label **namespaces** (`kind:`/`triage:`/`stage:` + `needs:human`) · `main` accepts only what passed `stage:verify` · every gate names an anchor · every cycle has a cap |
+| **2 · Configured values** | shape is fixed, the strings are per project — the system must be *told* them | actual label strings · base branch (`main`/`master`) · tracker · test command · demo command · design system · monitoring locations |
+| **3 · The project's own** | nothing mechanical reads it; the installer proposes a default the project may decline | **commit convention** (default: Conventional Commits) · code standards (the `review-loop` criteria docs) · ADR format · docs layout · language/framework conventions |
+
+**Branch naming is tier 1** because three separate mechanisms parse that string: the orchestrator
+routes on the prefix, cleanup keys off the issue number, and ralph's guard checks it for protection.
+
+**Commit messages are tier 3** because — today — nothing in the machinery reads them. Conventional
+Commits is worth *proposing* (most commits are agent-written, and machine-readable history is how you
+audit what the loops did), but enforcing a standard the system does not depend on would be borrowing
+authority we have no mechanical need for. Should a changelog or release automation ever parse
+commits, that promotes it to tier 1 — deliberately, not by drift.
+
+Tier 2 is already how `setup-agent-skills` works: *canonical names here, real strings per repo*. So
+**installing the process means: enforce the shapes, ask for the strings, propose the rest.**
 
 ### Layering
 

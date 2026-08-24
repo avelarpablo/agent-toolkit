@@ -135,8 +135,9 @@ The mechanics that let work flow as issues + labels + branches + worktrees.
   the `needs:human` modifier, and documents the `<type>/<issue#>-<slug>` branch convention (incl.
   `feat/`), mapped to real per-repo strings.
 - **needs:** nothing (can parallel Phase 0).
-- **also provisions the GitHub Project** (board by `stage:*` + roadmap) so no repo needs a manual
-  board, and **mirrors `kind:` onto native issue types where the owner is an org** — verified
+- **also provisions the GitHub Project** — **org-level, spanning every repo of the product** (PRDs in
+  the umbrella repo, slices in the code repos), with the four audience views (roadmap / backlog /
+  board / inbox) — and **mirrors `kind:` onto native issue types where the owner is an org** — verified
   2026-08: types are org-only (`OutputLabs` exposes Task/Bug/Feature; a personal-account repo returns
   `issueTypes: null`), so labels stay canonical and the type is a projection.
 - **branch conventions follow [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)**,
@@ -144,8 +145,15 @@ The mechanics that let work flow as issues + labels + branches + worktrees.
 - **↪** Tracker/label/branch vocabulary setup (**adapt** `setup-agent-skills`).
 - **includes the triage merge:** delete `ready-for-agent` (it *is* `stage:ready`); convert
   `ready-for-human` into the `needs:human` modifier; keep `needs-info`; `wontfix` → closed with a
-  reason. Existing issues carrying the old labels need a migration pass — check the count first, it
-  may be `gh`-scriptable. See [PROCESS.md → State machine & labels](PROCESS.md#state-machine--labels).
+  reason. See [PROCESS.md → State machine & labels](PROCESS.md#state-machine--labels).
+- **migration, measured** (`shopstackio/discount-genie-core`, 2026-08): **≥200** issues carry
+  `ready-for-agent`, 18 `ready-for-human`, 48 `needs-triage` — against 99 open, so most are closed.
+  `gh`-scriptable, but relabel **open issues only**; closed history keeps its old labels.
+- **the three standards tiers** ([PROCESS.md](PROCESS.md#standards--enforced-configured-or-yours))
+  are what this item implements: enforce the shapes, ask for the tier-2 strings, propose tier-3
+  defaults (commit convention, code standards, ADR format) that a project may decline.
+- **field evidence:** that repo independently grew `needs-attention` ("needs a human step or new-UI/
+  design attention") — the `needs:human` modifier, arrived at from real use before we designed it.
 
 ### 1.1a Work-kind intake — `log` + triage engine split
 The inbox and its exits, so captured work has a route in rather than sitting in a parking lot.
@@ -208,6 +216,10 @@ coherence blocker where 2.3 declared `needs: 0.x` and `0.x` resolved to nothing.
   closing the issue or touching labels**, and signals completion. Impl-only prompt.
 - **needs:** 1.2 (worktree), 1.3 (a slice to consume).
 - **↪** Dev loop (**adapt** `ralph`).
+- **the drift is textual, and now located:** `runners/ralph/prompt.md:34` enforces `feature/*` — the
+  convention [PROCESS.md](PROCESS.md#branch-naming) explicitly supersedes — and `:78` says "commit
+  and close the issue immediately", which is exactly what this item forbids. Both lines are the
+  adapt work, not a vague risk.
 
 ### 2.2 Refactor loop wiring
 - **done-when:** an orchestrated chain runs `review-loop` (find) → `ralph` (fix, refactor prompt) →

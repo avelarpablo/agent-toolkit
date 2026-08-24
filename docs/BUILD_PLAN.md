@@ -137,7 +137,8 @@ The mechanics that let work flow as issues + labels + branches + worktrees.
 - **needs:** nothing (can parallel Phase 0).
 - **also provisions the GitHub Project** — **org-level, spanning every repo of the product** (PRDs in
   the umbrella repo, slices in the code repos), with the four audience views (roadmap / backlog /
-  board / inbox) — and **mirrors `kind:` onto native issue types where the owner is an org** — verified
+  board / inbox) plus the `Environment` single-select (default Staging + Production) — and
+  **mirrors `kind:` onto native issue types where the owner is an org** — verified
   2026-08: types are org-only (`OutputLabs` exposes Task/Bug/Feature; a personal-account repo returns
   `issueTypes: null`), so labels stay canonical and the type is a projection.
 - **branch conventions follow [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)**,
@@ -177,7 +178,8 @@ The inbox and its exits, so captured work has a route in rather than sitting in 
 Deterministic mechanism the orchestrator will call.
 - **done-when:** scripts can (a) create a worktree on `<type>/<issue#>-<slug>` off a given base and
   tear it down; (b) flip an issue's `stage:` label; (c) state-aware cleanup of `~/.ralph/builds/<branch>/`
-  and merged branches, keyed to issue verified/closed; (d) **seed** one branch from a `design/…`
+  and merged branches, **keyed to the merge** (not the close — deployment must never stall cleanup);
+  (d) **seed** one branch from a `design/…`
   branch — the design step's unusual move, where approved prototype code becomes the starting commit
   of `feat/…` (or the lone `slice/…`/`task/…`) before `design/…` is deleted. Each runs standalone and
   idempotently.
@@ -295,6 +297,8 @@ coherence blocker where 2.3 declared `needs: 0.x` and `0.x` resolved to nothing.
 - **why the counter-metrics:** a board that only measures movement is a metric worth gaming — a
   pipeline merging slices fast while escaped defects climb looks excellent on it. See
   [PROCESS.md → Grounding](PROCESS.md#grounding--anchors-caps-and-counter-metrics).
+- **also ships** the `gh` snippet a deploy job calls to write `Environment` after close — the only
+  deployment surface the standard owns.
 - **needs:** 3.1 (the orchestrator pass exists). This item **adds** the Project Status write to
   that pass — 3.1 does not depend on the Project. **↪** GitHub Projects view; `status` skill; remove Trello.
 

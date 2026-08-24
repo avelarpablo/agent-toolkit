@@ -488,7 +488,11 @@ Three namespaces, each answering a different question — never overlapping:
 | `kind:` | what triggered this work | `log`, at capture |
 | `triage:` | is it ready to build? (**pre**-buildable) | you, via `triage` |
 | `stage:` | where is it in the build? (**buildable**) | the orchestrator |
-| `needs:human` | who executes it — a **modifier**, not a state | you |
+| `needs:human` | who executes it — a **modifier**, not a state | you, or a loop hitting its cap |
+| **Environment** *(Project field)* | where merged code has actually reached | **CI**, never the orchestrator |
+
+**One writer per field.** The orchestrator never writes Environment; CI never writes `stage:`. Two
+writers on one field is two sources of truth wearing a disguise.
 
 **Triage axis** governs getting an issue *ready*: `needs-triage → needs-info → wontfix`, and the
 single exit into the build machine is **`needs-triage → stage:ready`**.
@@ -596,9 +600,28 @@ CI/CD and **out of scope** (project-specific). The contract at the boundary:
   point; the project's own pipeline defines what happens after.
 - **Cadence: continuous by default.** Each feature is verified before its merge, so features release
   as they finish. Batch/held releases (feature flags, release trains) are a project layer on top.
-- **Issue lifecycle: close-on-merge by default.** verify → docs → promote → close (→ triggers
-  cleanup of `~/.ralph/builds/` and the branch). Add an optional `released` state only if a
-  project's deploy is async/gated and "merged but not yet live" must be tracked distinctly.
+- **Issue lifecycle: close on merge.** verify → docs → promote → **closed (Done)**. Cleanup keys off
+  the **merge**, not the close, so branches and `~/.ralph/builds/` are never held hostage to a deploy
+  schedule.
+- **Deployment is tracked on a closed issue.** A closed issue stays a project item and its fields
+  stay editable, so **CI keeps writing an `Environment` field after the issue closes**:
+
+  ```
+  promote feat → main → issue CLOSED (Done)
+                          ↓  CI writes, post-close
+                  Environment: Staging → Production
+  ```
+
+  This is why no `released` stage exists: holding an issue open until deploy would stall cleanup and
+  add a stage the orchestrator must reason about, to answer a question a field already answers.
+
+- **`Environment` is a Project single-select, values per project** (tier 2). Default **Staging +
+  Production**; a simple app configures Production only; a complex one adds Dev/UAT. **Environments
+  are never `stage:` labels** — the canonical stage set must stay small and identical everywhere, or
+  the orchestrator has to reason about a machine that differs per project.
+- **Scope line:** the standard defines the field, its writer, and a `gh` snippet for a deploy job.
+  The pipeline itself stays the project's. *The tracker must tell the truth about where code is; how
+  it gets there is not ours.*
 
 This closes the cycle: verified feature → merge (deploy trigger) → released → monitoring/feedback →
 back to intake.
@@ -742,10 +765,17 @@ than splitting a view.
 
 | View | Audience | Filter |
 |---|---|---|
-| **Roadmap** | product / design / architecture | before `stage:ready` — maps, PRDs, Design Docs |
-| **Backlog** | dev — what can I pick up | `stage:ready`, ordered |
-| **Board** | dev — what is in flight | `stage:dev` → `stage:docs` |
+| **Roadmap** | product / design / architecture | Ideas (`kind:wishlist`) → Shaping (PRD, design, Design Doc) → **In development** (any `stage:*`, collapsed to one column) → Done → Environment |
+| **Board** | dev | `stage:ready` → `stage:docs`, every stage granular |
+| **Deployment** | everyone | grouped by `Environment` — **includes closed items** |
 | **Inbox** | triage | has `kind:`, no `stage:` |
+
+Product sees *one* "In development" column where dev sees six — same items, different grouping. That
+is the whole argument for views over separate projects.
+
+**Closed items do not vanish.** A built-in workflow sets Status to Done when the issue closes; the
+card stays. Use **auto-archive** to keep views fast (archived items remain in the project and can be
+restored, and archiving is how a project stays under the 50,000-item cap).
 
 **Provisioned, not hand-built.** A repo's Project is created by `setup-agent-skills` alongside its
 labels — every project the system touches gets its board without a manual step. The orchestrator

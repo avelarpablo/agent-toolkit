@@ -201,8 +201,8 @@ Grilling appears **twice**, in two profiles: a **product grill** decides *what* 
 **PRD — *what & why*.** The scope lock. Problem, solution (user's view), user stories, success
 criteria, out-of-scope. **No implementation detail** — that goes in the Design Doc. Product grill.
 
-**Design (prototype) — *look & feel*.** Its own step because UI discussion diverges from
-delivered UI. Runs in a worktree (produces code → main stays pristine). Uses a HITL variant of the
+**Design (prototype) — *look & feel*.** Its own step (and its own stage — `stage:design`, see
+[State machine](#state-machine--labels)) because UI discussion diverges from delivered UI. Runs in a worktree (produces code → main stays pristine). Uses a HITL variant of the
 `prototype` skill + design skills to generate several variations; you approve one at a human gate.
 The approved prototype is a **binding input** — the Design Doc references it and the QA loop uses
 it as the visual acceptance reference.
@@ -501,11 +501,21 @@ loops. As a state it would force every stage to fork into agent and human varian
 split across two altitudes: **slice-level** loops run on each slice issue and end when the slice
 merges into `feat/…`; **feature-level** verify and docs run on the feature (PRD) issue.
 
+*On the feature (PRD) issue, **before** slicing — optional, only for UI-meaningful features:*
+
+| Stage label | Meaning | Transition trigger |
+|---|---|---|
+| `stage:design` | prototype variations generated in a `design/…` worktree; carries `needs:human` while awaiting your pick | **you approve one** → screenshots frozen onto the issue, `design/…` seeds `feat/…` (or the lone slice/task branch), `design/…` deleted |
+
+It is a stage rather than a roadmap activity because it **produces code in a worktree** and holds a
+human gate — the two signatures of a build stage. PRDs and Design Docs are documents; this one
+commits. Non-UI features skip it entirely.
+
 *On the slice issue:*
 
 | Stage label | Meaning | Transition trigger |
 |---|---|---|
-| `stage:ready` | eligible to start (today: `ready-for-agent`) | orchestrator picks it up |
+| `stage:ready` | eligible to start | orchestrator picks it up |
 | `stage:dev` | dev loop running | dev-loop checkboxes done |
 | `stage:refactor` | refactor loop running | review-loop returns zero blockers |
 | `stage:qa` | QA loop running | e2e written, proof captured → **merge into `feat/…`**; slice done |

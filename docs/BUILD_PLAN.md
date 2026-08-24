@@ -131,7 +131,7 @@ Design-Doc criteria (3 rounds). Authoring those two criteria docs is part of thi
 The mechanics that let work flow as issues + labels + branches + worktrees.
 
 ### 1.1 Label & branch conventions in `setup-agent-skills`
-- **done-when:** running it on a repo provisions the `stage:*`, `kind:*` and `triage:*` labels plus
+- **done-when:** running it on a repo provisions the `stage:*` labels (including `stage:design`), `kind:*` and `triage:*` plus
   the `needs:human` modifier, and documents the `<type>/<issue#>-<slug>` branch convention (incl.
   `feat/`), mapped to real per-repo strings.
 - **needs:** nothing (can parallel Phase 0).
@@ -169,9 +169,27 @@ The inbox and its exits, so captured work has a route in rather than sitting in 
 Deterministic mechanism the orchestrator will call.
 - **done-when:** scripts can (a) create a worktree on `<type>/<issue#>-<slug>` off a given base and
   tear it down; (b) flip an issue's `stage:` label; (c) state-aware cleanup of `~/.ralph/builds/<branch>/`
-  and merged branches, keyed to issue verified/closed. Each runs standalone and idempotently.
+  and merged branches, keyed to issue verified/closed; (d) **seed** one branch from a `design/…`
+  branch — the design step's unusual move, where approved prototype code becomes the starting commit
+  of `feat/…` (or the lone `slice/…`/`task/…`) before `design/…` is deleted. Each runs standalone and
+  idempotently.
 - **needs:** 1.1 (conventions).
 - **↪** Worktree create/teardown; Label flips; State-aware cleanup (all **new** ⬛).
+
+### 1.2a Design step — prototype → approved → seeds the branch
+The one planning activity that **produces code**, and the reason `stage:design` exists. Closes the
+coherence blocker where 2.3 declared `needs: 0.x` and `0.x` resolved to nothing.
+- **done-when:** for a UI-meaningful feature, the step opens a `design/<issue>-<slug>` worktree,
+  generates several variations in the project's **real design system**, and holds at
+  `stage:design` + `needs:human` until you approve one — visibly on the board, the way
+  `stage:verify` is. On approval it freezes screenshots onto the feature issue, seeds the target
+  branch via 1.2(d), deletes `design/…`, and moves the feature to `stage:ready`.
+- **needs:** 1.1 (`stage:design` label), 1.2 (worktree + seed scripts), 0.3 (a PRD to design against).
+- **feeds:** 1.3 (slices inherit the prototype through `feat/…`), 2.3 (QA's visual acceptance
+  reference).
+- **↪** Prototype (**adapt** — the HITL salvage path). Salvage is the default for UI-meaningful
+  features; throwaway keeps screenshots only.
+- **optional by design:** non-UI features skip the stage entirely.
 
 ### 1.3 Slice + implementation-plan producer
 - **done-when:** `to-vertical-issues` emits slice issues aligned to the `feat/`+`slice/` model with
@@ -206,7 +224,8 @@ Deterministic mechanism the orchestrator will call.
 - **done-when:** a two-agent QA runner (driver holds Playwright MCP + strategist/critic) drives the
   assembled app, checks against frozen prototype screenshots, and writes an e2e suite. `prototype`
   gains the HITL salvage path (real design system → seeds `design/…`→`feat/…`, freezes screenshots).
-- **needs:** Playwright MCP; 0.x for the prototype's design-step wiring.
+- **needs:** Playwright MCP; **1.2a** (the design step — QA's visual acceptance reference comes from
+  its frozen screenshots).
 - **↪** QA loop (**new** 🟧); Prototype (**adapt**).
 
 ---
@@ -217,7 +236,8 @@ Deterministic mechanism the orchestrator will call.
 - **done-when:** a manual pass reads the board and, respecting the four conflict dimensions +
   concurrency caps (QA=1) and skipping anything flagged `needs:human`, advances every
   legally-advanceable issue: creates/tears down worktrees
-  (via 1.2), launches the right loop, flips the `stage:` label, and reports. Idempotent + resumable
+  (via 1.2), launches the right loop — **including `stage:design`, which it dispatches AFK and then
+  holds with `needs:human` for your pick** — flips the `stage:` label, and reports. Idempotent + resumable
   (re-run picks up from labels).
 - **Project Status writes are *not* part of this acceptance check** — the Project does not exist
   until 4.4. 4.4 adds the Status write to the pass it already owns. (Requiring it here made 3.1 and
@@ -279,9 +299,9 @@ Deterministic mechanism the orchestrator will call.
 ## Critical path & parallelism
 
 ```
-0.1 ─▶ 0.2 ─▶ 0.3 ─┐
-                   ├─▶ 1.3 ─▶ 2.1 ─▶ 2.2 ─┐
-1.1 ─▶ 1.2 ────────┘                2.3 ─┤─▶ 3.1 ─▶ (self-host) ─▶ 4.x ─▶ 5.x
+0.1 ─▶ 0.1a ─▶ 0.1b ─▶ 0.2 ─▶ 0.3 ─┬─▶ 1.2a ─┐
+                                   ├─▶ 1.3 ──┴▶ 2.1 ─▶ 2.2 ─┐
+1.1 ─▶ 1.2 ─▶ 1.1a ────────────────┘              2.3 ─┤─▶ 3.1 ─▶ (self-host) ─▶ 4.x ─▶ 5.x
 ```
 
 - **Serial spine:** 0.1 → 0.2 → 0.3 gate everything design-related; 3.1 gates self-hosting.

@@ -24,7 +24,7 @@ the generic profile's parameters and flow.
 | promotion | when work crystallizes into a deliverable, publish it to the issue tracker |
 
 ```bash
-FIC="$(command -v fic || echo "$HOME/.agents/skills/fic/fic")"
+FIC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/fic/fic"
 ```
 
 ## Flow

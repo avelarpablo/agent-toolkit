@@ -131,13 +131,13 @@ Design-Doc criteria (3 rounds). Authoring those two criteria docs is part of thi
 The mechanics that let work flow as issues + labels + branches + worktrees.
 
 ### 1.1 Label & branch conventions in `setup-agent-skills`
-- **done-when:** running it on a repo provisions the `stage:*` labels (including `stage:design`), `kind:*` and `triage:*` plus
+- **done-when:** running it on a repo provisions the `stage:*` labels (including `stage:design`), `kind:*`, `triage:*`, `wayfinder:map` plus
   the `needs:human` modifier, and documents the `<type>/<issue#>-<slug>` branch convention (incl.
   `feat/`), mapped to real per-repo strings.
 - **needs:** nothing (can parallel Phase 0).
 - **also provisions the GitHub Project** — **org-level, spanning every repo of the product** (PRDs in
   the umbrella repo, slices in the code repos), with the four audience views (roadmap / backlog /
-  board / inbox) plus the `Environment` single-select (default Staging + Production) — and
+  board / **deployment**) plus the `Environment` single-select (default Staging + Production) — and
   **mirrors `kind:` onto native issue types where the owner is an org** — verified
   2026-08: types are org-only (`OutputLabs` exposes Task/Bug/Feature; a personal-account repo returns
   `issueTypes: null`), so labels stay canonical and the type is a projection.
@@ -218,10 +218,14 @@ coherence blocker where 2.3 declared `needs: 0.x` and `0.x` resolved to nothing.
   closing the issue or touching labels**, and signals completion. Impl-only prompt.
 - **needs:** 1.2 (worktree), 1.3 (a slice to consume).
 - **↪** Dev loop (**adapt** `ralph`).
-- **the drift is textual, and now located:** `runners/ralph/prompt.md:34` enforces `feature/*` — the
-  convention [PROCESS.md](PROCESS.md#branch-naming) explicitly supersedes — and `:78` says "commit
-  and close the issue immediately", which is exactly what this item forbids. Both lines are the
-  adapt work, not a vague risk.
+- **the drift is in the runner, not just the prompt** — re-audited 2026-08, and far larger than
+  first recorded. Prompt: `:23` adds the deleted `ready-for-agent`, `:34` enforces the superseded
+  `feature/*`, `:21`/`:78`/`:80` close the issue. **Script:** `ralph:1620` `gh issue close`;
+  `ralph:675,876,915,1003,1599,2411` `--add-label ready-for-agent`; `ralph:2168` *creates* the
+  deleted label set; `ralph:643,705` treat `ready-for-human` as a hard blocker rather than an
+  orchestrator-read modifier; `ralph:841-855` **creates branches**, which
+  [PROCESS.md](PROCESS.md#layering) says ralph never does. Confirms the fork this item was flagged
+  to be.
 
 ### 2.2 Refactor loop wiring
 - **done-when:** an orchestrated chain runs `review-loop` (find) → `ralph` (fix, refactor prompt) →

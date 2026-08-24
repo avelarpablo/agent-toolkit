@@ -14,7 +14,7 @@ CODEX_MODEL="${REVIEW_CODEX_MODEL:-gpt-5.5}"
 
 CRITERIA=""
 PR=""
-BASE="develop"
+BASE="main"
 ROUNDS=3
 DRY_RUN=0
 INCLUDE_ALL=0
@@ -23,7 +23,7 @@ FILES=()
 
 usage() {
   cat <<'EOF'
-review-loop — adversarial code review (Claude + Codex)
+review-loop — adversarial review of code or documents (Claude + Codex)
 
 Usage:
   review-loop --criteria <path> [options]
@@ -34,7 +34,7 @@ Options:
                        Use for plans, specs and design docs.
   --profile <name>     Prompt set: code | coherence (default: inferred from target)
   --pr <N|URL>         PR number or GitHub URL to review
-  --base <branch>      Base branch for diff (default: develop)
+  --base <branch>      Base branch for diff (default: main)
   --rounds <N>         Number of review rounds (default: 3)
   --output-dir <path>  Output directory for reviews (default: .reviews/)
   --dry-run            Show what would happen without running reviews
@@ -42,7 +42,7 @@ Options:
 
 Examples:
   review-loop --criteria docs/PR_REVIEW_CRITERIA.md --pr 42
-  review-loop --criteria docs/agentic/ --base develop
+  review-loop --criteria docs/agentic/ --base main
   review-loop --criteria criteria.md --pr 42 --rounds 2
   review-loop --files docs/BUILD_PLAN.md --criteria "$(dirname "$0")/criteria/coherence.md"
 EOF

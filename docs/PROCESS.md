@@ -336,7 +336,7 @@ models differs.
 publish, unchecked, at exactly the altitude where mistakes are cheapest to fix. The coherence
 criteria don't judge decisions — they find **contradictions, duplicate concepts under two names,
 orphaned references, ordering violations, unfalsifiable acceptance criteria, resolved-but-not-decided
-questions, and load-bearing unstated assumptions** (C-1…C-8). Every one of those was found by hand in
+questions, load-bearing unstated assumptions, and scope leaks** (C-1…C-8). Every one of those was found by hand in
 this system's own spec before the loop existed.
 
 **On demand now, a gate later** — `to-prd`/`to-design-doc` will run it pre-publish once the criteria
@@ -426,8 +426,8 @@ where you verify the assembled feature. `main` itself is only ever touched by th
 | e2e tests | committed to the branch | It's code; merges naturally |
 | Proof summary + verification report | the GitHub issue | Portable, permanent, canonical |
 
-Cleanup is **state-aware**: a build dir is freed only once its issue is verified/closed — human
-verification is the trigger. Keys off the same issue state machine as everything else.
+Cleanup is **state-aware** and keyed to the **merge** — a build dir is freed once its branch has
+merged, never on the close, so a deploy schedule can never hold worktrees hostage. Keys off the same issue state machine as everything else.
 
 ### Branch naming
 
@@ -925,9 +925,9 @@ install tree stays **flat**, so a skill's own path never changes and regrouping 
 | Capability | Closest existing | Call | Type | Notes |
 |---|---|---|---|---|
 | Orchestrator pass (advance stages, caps, QA=1) | `ralph-orchestrator` | **adapt** | 🟦 | add stage machine, `feat/` model, concurrency caps |
-| Worktree create/teardown | (none) | **new** | ⬛ | called by orchestrator; ralph never does this |
+| Worktree create/teardown **+ seed** | (none) | **new** | ⬛ | called by orchestrator; ralph never does this. **Seed** = `design/…` becomes the target branch's first commit |
 | Label flips / stage transitions | (none) | **new** | ⬛ | drive the `stage:` machine |
-| State-aware cleanup (`~/.ralph/builds`, branches) | (none) | **new** | ⬛ | keyed to issue verified/closed |
+| State-aware cleanup (`~/.ralph/builds`, branches) | (none) | **new** | ⬛ | keyed to the **merge**, never the close |
 
 ### Verification, FIC & feedback
 
@@ -983,8 +983,8 @@ Being grilled into shape. Not final.
    hierarchy (per-project + optional root-shared), at project root not `.agents/`; log-fetching
    skill later resolves the nearest one. See [Cross-cutting axes](#cross-cutting-axes).
 9. ~~Release/deploy~~ — RESOLVED. Standard ends at the verified `feat → main` promote (the deploy
-   trigger); deploy itself is CI/CD, out of scope. Continuous cadence, close-on-merge, optional
-   `released` state. See [Release & deploy](#release--deploy).
+   trigger); deploy itself is CI/CD, out of scope. Continuous cadence and close-on-merge; deployment is tracked by the
+   `Environment` **field** on a closed issue, so there is **no** `released` state. See [Release & deploy](#release--deploy).
 
 Also resolved this session: **branch naming standard** (`<type>/<issue#>-<slug>`, buildable-unit
 only, with the `feat/…` integration branch) — see [Branch naming](#branch-naming); and the

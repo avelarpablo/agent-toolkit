@@ -17,11 +17,11 @@ Spec: [`docs/PROCESS.md` → FIC — context management](../../../docs/PROCESS.m
 ## Calling the script
 
 ```bash
-FIC="$(command -v fic || echo "$HOME/.agents/skills/fic/fic")"
+FIC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/fic/fic"
 ```
 
-`~/.agents/skills/fic/fic` is where `toolkit sync` symlinks it. Inside this repo it is also at
-`skills/fic/fic`. Run `"$FIC" help` for the full command surface.
+`toolkit sync` installs into the *active account's* config dir, so the path follows `CLAUDE_CONFIG_DIR`. In this repo the source is
+`skills/primitives/fic/fic`. Run `"$FIC" help` for the full command surface.
 
 ---
 

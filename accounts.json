@@ -1,5 +1,5 @@
 {
-  "_comment": "Which skill groups each Claude Code account gets. Mirrors the ACCOUNTS arrays in claude-env/setup-claude-env.sh and runners/ralph/setup-multi-account.sh. Groups are directories under skills/. Adding an account here is all `toolkit sync` needs.",
+  "_comment": "Which skill groups each Claude Code account gets. Mirrors the ACCOUNTS array in claude-env/setup-claude-env.sh. (runners/ralph/setup-multi-account.sh uses its own account names — e.g. avelarpablo, not personal — and is not kept in sync with this file.) Groups are directories under skills/. Adding an account here is all `toolkit sync` needs.",
 
   "default_account": "personal",
 

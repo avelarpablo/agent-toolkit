@@ -600,6 +600,13 @@ CI/CD and **out of scope** (project-specific). The contract at the boundary:
   point; the project's own pipeline defines what happens after.
 - **Cadence: continuous by default.** Each feature is verified before its merge, so features release
   as they finish. Batch/held releases (feature flags, release trains) are a project layer on top.
+- **GitHub's auto-close already matches this model** (verified 2026-08). Closing keywords
+  (`closes`/`fixes`/`resolves #N`) fire **only when a PR merges into the repository's default
+  branch**. So slice PRs — which target `feat/…`, not the default — never auto-close their issues,
+  and the orchestrator keeps ownership; the `feat → main` promote PR *does* auto-close whatever it
+  references, which is exactly where the feature issue should close. Cross-repo closes work with
+  `owner/repo#N`, so a code-repo promote PR can close a PRD living in the umbrella repo. **The
+  promote PR must reference the issues** or nothing closes — orchestrator's job, via a PR template.
 - **Issue lifecycle: close on merge.** verify → docs → promote → **closed (Done)**. Cleanup keys off
   the **merge**, not the close, so branches and `~/.ralph/builds/` are never held hostage to a deploy
   schedule.

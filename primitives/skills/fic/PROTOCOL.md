@@ -21,7 +21,7 @@ FIC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/fic/fic"
 ```
 
 `toolkit sync` installs into the *active account's* config dir, so the path follows `CLAUDE_CONFIG_DIR`. In this repo the source is
-`skills/primitives/fic/fic`. Run `"$FIC" help` for the full command surface.
+`primitives/skills/fic/fic`. Run `"$FIC" help` for the full command surface.
 
 ---
 

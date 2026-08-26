@@ -1,0 +1,23 @@
+{
+  "job_id": "sched-71236df1",
+  "command": "ping",
+  "flags": {
+    "ping": true
+  },
+  "run_at": "2026-06-25T19:06:00",
+  "created_at": "2026-06-24T23:20:21",
+  "status": "failed",
+  "backend": "launchd",
+  "backend_id": "com.ralph-core.sched-71236df1",
+  "allow_risky": false,
+  "preflight_at_creation": {
+    "decision": "GO",
+    "warnings": []
+  },
+  "preflight_at_runtime": {
+    "decision": "NO_GO",
+    "warnings": null
+  },
+  "log_path": "/Users/pablo-avelar/Dev/personal/agent-toolkit/runners/ralph/logs/scheduled/sched-71236df1.log",
+  "run_id": null
+}

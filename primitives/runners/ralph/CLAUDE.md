@@ -152,7 +152,7 @@ _ralph_check_extra()   # additional check output (called by `ralph check`)
 ```
 
 Set `RALPH_HOOKS=/path/to/hooks.sh` before running ralph. See
-`runners/ralph-dg/hooks.sh` for a working example.
+`flows/shopstack/runners/ralph-dg/hooks.sh` for a working example.
 
 ## Prerequisites
 

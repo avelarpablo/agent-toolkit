@@ -10,9 +10,9 @@ run by it). Goal: implement a batch of `ready-for-agent` issues via chained ralp
 loops, keeping the driver's context tiny across an arbitrarily long run.
 
 This is the orchestration layer on top of ralph itself. For how ralph works
-internally, read [`../../runners/ralph/CLAUDE.md`](../../../../runners/ralph/CLAUDE.md).
+internally, read [`../../primitives/runners/ralph/CLAUDE.md`](../../../../primitives/runners/ralph/CLAUDE.md).
 For multi-account isolation, read
-[`../../runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../../../runners/ralph/MULTI_ACCOUNT_SETUP.md).
+[`../../primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../../../primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md).
 
 ## The core idea: ralph loops as background subprocesses
 
@@ -45,7 +45,7 @@ If detachment is genuinely unavoidable, arm a separate watcher that completes
 only when the loop truly exits:
 
 ```bash
-while pgrep -f "runners/ralph/ralph loop" >/dev/null; do sleep 30; done; echo "loop exited"
+while pgrep -f "primitives/runners/ralph/ralph loop" >/dev/null; do sleep 30; done; echo "loop exited"
 ```
 
 ## Chaining loops until the queue drains

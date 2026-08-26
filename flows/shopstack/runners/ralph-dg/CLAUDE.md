@@ -51,5 +51,5 @@ from `develop` when `RALPH_FEATURE_BRANCH` is set.
 
 ## See also
 
-- `runners/ralph/CLAUDE.md` — generic ralph documentation
-- `runners/ralph-dg/hooks.sh` — DG-specific routing overrides
+- `primitives/runners/ralph/CLAUDE.md` — generic ralph documentation
+- `flows/shopstack/runners/ralph-dg/hooks.sh` — DG-specific routing overrides

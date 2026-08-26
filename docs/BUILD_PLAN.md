@@ -37,7 +37,7 @@ The shared contract every long-running skill inherits, and the standalone catch-
 - **needs:** nothing (foundation).
 - **↪** Shared FIC primitive; General FIC skill. Reference: `handoff`, `session-keeper`.
 
-**Built as:** `skills/primitives/fic/` — `fic` (the script: `init`/`checkpoint`/`header`/`resume`/
+**Built as:** `primitives/skills/fic/` — `fic` (the script: `init`/`checkpoint`/`header`/`resume`/
 `list`/`path`/`compact`), `PROTOCOL.md` (the contract skills inherit by reference), `SKILL.md` (the
 generic profile). Working files live at `<dotdir>/<slug>/progress.md`, dotdir per skill (`.fic`,
 `.grill`, `.verify`, …), auto-gitignored; `init` is idempotent so start and resume are one call.
@@ -110,8 +110,8 @@ One engine, parameterized by a profile; checkpoints via 0.1.
   Both leave a resumable working file.
 - **needs:** 0.1, 0.1a.
 - **↪** Grilling engine (**replace** `grill-me`/`grill-verified`/`grill-with-docs`); Grill profiles.
-- **layering (from 0.1a):** the engine ships as `skills/primitives/grill/` — it must name no stage,
-  label or artifact type — and the PRD/Design-Doc profiles as `skills/flows/personal-dev/`. Build
+- **layering (from 0.1a):** the engine ships as `primitives/skills/grill/` — it must name no stage,
+  label or artifact type — and the PRD/Design-Doc profiles as `flows/personal-dev/skills/`. Build
   them apart from the start; the engine has to be usable under a flow that isn't this one.
 
 ### 0.3 `to-prd` + `to-design-doc` producers

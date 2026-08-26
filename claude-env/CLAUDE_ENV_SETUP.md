@@ -6,7 +6,7 @@ source. A companion script,
 [`setup-claude-env.sh`](./setup-claude-env.sh), provisions it idempotently.
 
 This is the sibling of
-[`runners/ralph/MULTI_ACCOUNT_SETUP.md`](../runners/ralph/MULTI_ACCOUNT_SETUP.md):
+[`primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md`](../primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md):
 that one decides **which** account a project uses; this one makes every account
 **look and behave alike** once selected.
 

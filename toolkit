@@ -2,8 +2,10 @@
 set -euo pipefail
 
 TOOLKIT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SKILLS_SRC="$TOOLKIT_DIR/skills"
-RUNNERS_SRC="$TOOLKIT_DIR/runners"
+# Groups own their own skills/ and runners/: <group>/skills/<name>, <group>/runners/<name>.
+# A group is "primitives", "general", or "flows/<flow>". accounts.json maps an
+# account to the groups it installs.
+TOOLKIT_ROOT="$TOOLKIT_DIR"
 META_DIR="$TOOLKIT_DIR/.toolkit"
 DISABLED_FILE="$META_DIR/disabled.json"
 ACCOUNTS_FILE="$TOOLKIT_DIR/accounts.json"
@@ -58,24 +60,37 @@ owns_symlink() {
   [[ -L "$link" ]] || return 1
   local target
   target="$(readlink "$link")"
-  [[ "$target" == "$TOOLKIT_DIR/skills/"* ]]
+  [[ "$target" == "$TOOLKIT_ROOT/"* ]]
 }
 
-# Skills are grouped by layer: skills/<group>/<name>/SKILL.md, where <group> may
-# itself be nested (flows/personal-dev). The group decides *which accounts* get
-# the skill; the install tree stays flat, so a skill's own path never changes.
-# Prints "<group><TAB><name>", sorted.
+# Every <group>/skills/<name>/SKILL.md in the tree. Prints "<group><TAB><name>".
 available_skills() {
   local f rel group name
   while IFS= read -r f; do
-    rel="${f#"$SKILLS_SRC"/}"          # <group>/<name>/SKILL.md
-    rel="${rel%/SKILL.md}"             # <group>/<name>
+    rel="${f#"$TOOLKIT_ROOT"/}"            # <group>/skills/<name>/SKILL.md
+    rel="${rel%/SKILL.md}"                 # <group>/skills/<name>
     name="${rel##*/}"
-    group="${rel%/*}"
-    [[ "$group" == "$name" ]] && group="(ungrouped)"
+    group="${rel%/skills/$name}"
     printf '%s\t%s\n' "$group" "$name"
-  done < <(find "$SKILLS_SRC" -name SKILL.md -type f 2>/dev/null | sort)
+  done < <(find "$TOOLKIT_ROOT" -path '*/skills/*/SKILL.md' -type f -not -path '*/.git/*' 2>/dev/null | sort)
 }
+
+# Every <group>/runners/<name>/runner.json. Prints "<group><TAB><name>".
+available_runners_grouped() {
+  local f rel group name
+  while IFS= read -r f; do
+    rel="${f#"$TOOLKIT_ROOT"/}"
+    rel="${rel%/runner.json}"
+    name="${rel##*/}"
+    group="${rel%/runners/$name}"
+    printf '%s\t%s\n' "$group" "$name"
+  done < <(find "$TOOLKIT_ROOT" -path '*/runners/*/runner.json' -type f -not -path '*/.git/*' 2>/dev/null | sort)
+}
+
+available_runners() { available_runners_grouped | awk -F'\t' '{print $2}'; }
+
+runner_group() { available_runners_grouped | awk -F'\t' -v n="$1" '$2 == n && !s { print $1; s=1 }'; }
+runner_dir()   { local g; g="$(runner_group "$1")"; [[ -z "$g" ]] && return 1; printf '%s/%s/runners/%s\n' "$TOOLKIT_ROOT" "$g" "$1"; }
 
 skill_group() {
   # No `exit` on match: quitting awk early closes the pipe, and SIGPIPE under
@@ -87,7 +102,7 @@ skill_src() {
   local group
   group="$(skill_group "$1")"
   [[ -z "$group" ]] && return 1
-  [[ "$group" == "(ungrouped)" ]] && printf '%s/%s\n' "$SKILLS_SRC" "$1" || printf '%s/%s/%s\n' "$SKILLS_SRC" "$group" "$1"
+  printf '%s/%s/skills/%s\n' "$TOOLKIT_ROOT" "$group" "$1"
 }
 
 # Names of the skills belonging to the given groups (space-separated string).
@@ -125,17 +140,11 @@ account_target() {
   printf '%s/skills\n' "${dir/#\~/$HOME}"
 }
 
-available_runners() {
-  for d in "$RUNNERS_SRC"/*/; do
-    [[ -f "$d/runner.json" ]] && basename "$d"
-  done
-}
-
 runner_entrypoint() {
   local name="$1"
   python3 -c "
 import json
-r = json.load(open('$RUNNERS_SRC/$name/runner.json'))
+r = json.load(open('$(runner_dir "$name")/runner.json'))
 print(r['entrypoint'])
 "
 }
@@ -144,7 +153,7 @@ runner_description() {
   local name="$1"
   python3 -c "
 import json
-r = json.load(open('$RUNNERS_SRC/$name/runner.json'))
+r = json.load(open('$(runner_dir "$name")/runner.json'))
 print(r.get('description', ''))
 "
 }
@@ -197,7 +206,7 @@ sync_skills() {
         ((kept++))
         continue
       fi
-      if [[ "$current_target" == "$SKILLS_SRC/"* ]]; then
+      if [[ "$current_target" == "$TOOLKIT_ROOT/"* ]]; then
         # Ours, but pointing at the old path — a regrouped skill lands here
         if [[ "$dry_run" == "true" ]]; then
           echo "  would regroup $skill → $src"
@@ -275,7 +284,7 @@ build_alias_block() {
     is_disabled runners "$runner" && continue
     local entrypoint
     entrypoint="$(runner_entrypoint "$runner")"
-    echo "alias $runner=\"$RUNNERS_SRC/$runner/$entrypoint\""
+    echo "alias $runner=\"$(runner_dir "$runner")/$entrypoint\""
   done
   echo "$SENTINEL_END"
 }
@@ -414,7 +423,7 @@ cmd_disable() {
     set_disabled skills "$name" add
     echo "Disabled skill: $name"
     echo "Run './toolkit sync' to apply"
-  elif [[ -d "$RUNNERS_SRC/$name" ]]; then
+  elif [[ -n "$(runner_group "$name")" ]]; then
     set_disabled runners "$name" add
     echo "Disabled runner: $name"
     echo "Run './toolkit sync' to apply"
@@ -434,7 +443,7 @@ cmd_enable() {
     set_disabled skills "$name" remove
     echo "Enabled skill: $name"
     echo "Run './toolkit sync' to apply"
-  elif [[ -d "$RUNNERS_SRC/$name" ]]; then
+  elif [[ -n "$(runner_group "$name")" ]]; then
     set_disabled runners "$name" remove
     echo "Enabled runner: $name"
     echo "Run './toolkit sync' to apply"
@@ -505,7 +514,7 @@ cmd_status() {
     else
       state="not installed"
     fi
-    printf "  %-20s %-10s %s\n" "$runner" "$state" "$desc"
+    printf "  %-18s %-16s %-10s %s\n" "$(runner_group "$runner")" "$runner" "$state" "$desc"
   done
 }
 

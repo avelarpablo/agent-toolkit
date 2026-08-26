@@ -365,7 +365,7 @@ round; a Design Doc that will spawn a dozen slices pays three.
 
 **The criteria are the work, not the wiring.** A gate with vague criteria produces vague findings
 and trains you to ignore it. Each criteria doc is written like
-[`coherence.md`](../runners/review-loop/criteria/coherence.md): numbered rules, explicit
+[`coherence.md`](../primitives/runners/review-loop/criteria/coherence.md): numbered rules, explicit
 out-of-scope, and an explicit ban on padding.
 
 **Why gates and not good intentions:** the failure mode is finishing an artifact, feeling done, and

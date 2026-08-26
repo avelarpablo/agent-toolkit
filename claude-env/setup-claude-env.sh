@@ -14,7 +14,7 @@ set -euo pipefail
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 # One line per account:  label | claude-config-dir
-# Must mirror the ACCOUNTS array in runners/ralph/setup-multi-account.sh —
+# Must mirror the ACCOUNTS array in primitives/runners/ralph/setup-multi-account.sh —
 # that script routes accounts per project, this one makes them look alike.
 ACCOUNTS=(
   "personal|~/.claude"

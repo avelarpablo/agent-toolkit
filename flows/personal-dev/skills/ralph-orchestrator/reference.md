@@ -2,8 +2,8 @@
 
 Deep mechanics and hard-won gotchas for driving ralph in the background. Every
 mechanic below is verified against the ralph source at
-[`../../runners/ralph/ralph`](../../../../runners/ralph/ralph) and
-[`../../runners/ralph/lib/core.py`](../../../../runners/ralph/lib/core.py); line
+[`../../primitives/runners/ralph/ralph`](../../../../primitives/runners/ralph/ralph) and
+[`../../primitives/runners/ralph/lib/core.py`](../../../../primitives/runners/ralph/lib/core.py); line
 numbers are as of writing — grep to reconfirm if the source has moved.
 
 ## <a id="epic-label-hijack"></a>The epic-label hijack (biggest gotcha)
@@ -76,9 +76,9 @@ working fine. Mitigation:
 Full isolation mechanism — isolated config dirs, keychain namespacing by
 `sha256(CLAUDE_CONFIG_DIR)`, the legacy-vs-hashed Claude slot trap, and the
 same-account OAuth refresh race — is documented in
-[`../../runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../../../runners/ralph/MULTI_ACCOUNT_SETUP.md).
+[`../../primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md`](../../../../primitives/runners/ralph/MULTI_ACCOUNT_SETUP.md).
 The idempotent provisioner is
-[`../../runners/ralph/setup-multi-account.sh`](../../../../runners/ralph/setup-multi-account.sh).
+[`../../primitives/runners/ralph/setup-multi-account.sh`](../../../../primitives/runners/ralph/setup-multi-account.sh).
 
 **Never run two sessions on the same Claude account concurrently** — e.g. an
 interactive driver and a ralph loop both on `~/.claude`. The OAuth token refresh
@@ -105,7 +105,7 @@ Big epics (especially greenfield ports) must be broken into dependency-chained
 vertical slices **before** launching ralph. Each child issue should have:
 
 - `## Parent` pointing at the tracker (see PRD convention in
-  [`../../runners/ralph/CLAUDE.md`](../../../../runners/ralph/CLAUDE.md)),
+  [`../../primitives/runners/ralph/CLAUDE.md`](../../../../primitives/runners/ralph/CLAUDE.md)),
 - `## Blocked by #N` for its prerequisites,
 - a brief that points at **concrete reference files by absolute path**.
 

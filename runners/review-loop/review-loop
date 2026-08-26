@@ -14,7 +14,18 @@ CODEX_MODEL="${REVIEW_CODEX_MODEL:-gpt-5.5}"
 
 CRITERIA=""
 PR=""
-BASE="main"
+# Base branch is tier-2 config, not a constant: derive it from the repo's own
+# default branch so this works in a GitHub Flow repo (main) and a GitFlow one
+# (develop) alike. --base still overrides.
+default_base() {
+  local d
+  d="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" && [[ -n "$d" ]] && { printf '%s\n' "${d#origin/}"; return 0; }
+  for d in main master develop; do
+    git rev-parse --verify --quiet "$d" >/dev/null 2>&1 && { printf '%s\n' "$d"; return 0; }
+  done
+  printf 'main\n'
+}
+BASE=""
 ROUNDS=3
 DRY_RUN=0
 INCLUDE_ALL=0
@@ -34,7 +45,7 @@ Options:
                        Use for plans, specs and design docs.
   --profile <name>     Prompt set: code | coherence (default: inferred from target)
   --pr <N|URL>         PR number or GitHub URL to review
-  --base <branch>      Base branch for diff (default: main)
+  --base <branch>      Base branch for diff (default: the repo's default branch)
   --rounds <N>         Number of review rounds (default: 3)
   --output-dir <path>  Output directory for reviews (default: .reviews/)
   --dry-run            Show what would happen without running reviews
@@ -63,6 +74,9 @@ while [[ $# -gt 0 ]]; do
     *)          echo "error: unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+[[ -z "$BASE" ]] && BASE="$(default_base)"
+[[ -z "$BASE" ]] && BASE="main"
 
 if [[ -z "$CRITERIA" ]]; then
   echo "error: --criteria is required." >&2

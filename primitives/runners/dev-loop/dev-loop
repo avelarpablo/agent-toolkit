@@ -24,7 +24,10 @@ log() { printf '[dev-loop] %s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'EOF'
-dev-loop --issue <N> [--repo owner/repo] [--work-dir <dir>] [--max <n>] [--test-cmd "<cmd>"]
+dev-loop --issue <N> [--repo owner/repo] [--work-dir <dir>] [--max <n>] [--test-cmd "<cmd>"] [--prompt <file>]
+
+  --prompt <file>  override the implementation prompt (e.g. refactor-prompt.md to run
+                   this same loop as the refactor loop's fix actor).
 
   Runs in --work-dir (default: cwd) on its current branch — a worktree handed to it.
   Implements the checkbox plan in issue <N>, gating each commit with Codex, until
@@ -40,6 +43,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --work-dir) WORK_DIR="$2"; shift 2;;
   --max) MAX="$2"; shift 2;;
   --test-cmd) TEST_CMD="$2"; shift 2;;
+  --prompt) PROMPT_FILE="$2"; shift 2;;
   -h|--help) usage;;
   *) die "unknown arg: $1";;
 esac; done

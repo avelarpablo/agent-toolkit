@@ -95,6 +95,17 @@ Provision the field + values; the skills write the transitions.
 Values per project (tier-2), default **Staging · Production**. Written by **CI, after the issue
 closes** (a closed issue stays a project item with editable fields). Never a `stage:` label.
 
+The standard owns exactly one deployment surface: **the `gh` snippet a deploy job calls** to record
+where code reached, once it's live. Everything else about the pipeline is the project's. A deploy job
+runs, after a successful deploy:
+
+```bash
+# Set the Environment field on the (closed) feature issue's project item.
+gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" \
+  --field-id "$ENV_FIELD_ID" --single-select-option-id "$PRODUCTION_OPTION_ID"
+# (IDs come from `gh project field-list` / `gh api graphql`; wire them into the CI env once.)
+```
+
 ### The four views
 
 | View | Groups by | Filter/notes |

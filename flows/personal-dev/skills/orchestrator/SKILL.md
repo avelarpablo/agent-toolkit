@@ -14,8 +14,16 @@ same pass on a cron; later.)
 
 It owns **policy** (which loop, when, respecting conflicts); the [`dev-flow`](../../runners/dev-flow/runner.json)
 runner owns the deterministic mechanics (worktrees, label flips, cleanup) and the build loops own the
-work. The orchestrator writes `stage:` labels and nothing else — **not** Project `Status` (that write
-is added in build item 4.4).
+work.
+
+**The orchestrator also writes the Project `Status` field** — in the same step it flips a `stage:`
+label. It owns exactly the *In development* transition of the [lifecycle Status](status/SKILL.md): it
+sets a feature's `Status` to **In development** when it slices the feature (children enter the build
+phase — see [`status`](../status/SKILL.md)), and keeps it there as slices advance; the built-in
+workflow sets **Done** on close. It does
+**not** write the pre-build values (`log`→Ideas, the producers→Shaping) or `Environment` (CI's) —
+one writer per transition. Set it via the Project API alongside the label flip; labels stay canonical
+and `Status` is the product-facing mirror.
 
 ## One pass
 

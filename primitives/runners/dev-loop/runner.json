@@ -1,0 +1,4 @@
+{
+  "entrypoint": "dev-loop",
+  "description": "The make-it-work build loop — Claude implements a checkbox plan in a handed worktree with a blocking Codex correctness gate, stops at dev-done without touching the issue/labels/branch, and emits the status.json completion signal. A pipeline-agnostic fork of ralph's core loop."
+}

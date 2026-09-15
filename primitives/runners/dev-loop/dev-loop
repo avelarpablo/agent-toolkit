@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# dev-loop — the make-it-work build loop.
+# Claude implements a checkbox plan in a HANDED worktree with a blocking Codex
+# correctness gate, stops at dev-done, and writes a status.json completion signal.
+# It NEVER closes the issue, writes labels, or creates/switches branches.
+#
+# A pipeline-agnostic fork of ralph's core loop — deliberately lean. Robustness
+# ralph earned the hard way (auth preflight, usage-exhaustion resume, retries) is
+# a later hardening pass; this is the correct-contract first version.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+MODEL="${DEV_LOOP_MODEL:-claude-opus-4-6}"
+EFFORT="${DEV_LOOP_EFFORT:-medium}"
+CODEX_MODEL="${DEV_LOOP_CODEX_MODEL:-gpt-5.5}"
+BUILDS_ROOT="${DEV_LOOP_BUILDS_ROOT:-$HOME/.ralph/builds}"
+PROTECTED="${DEV_LOOP_PROTECTED:-main master develop staging production}"
+SCHEMA="$HERE/review-schema.json"
+PROMPT_FILE="$HERE/prompt.md"
+
+WORK_DIR="$PWD"; ISSUE=""; REPO=""; MAX=10; TEST_CMD=""
+die() { printf 'dev-loop: %s\n' "$*" >&2; exit 1; }
+log() { printf '[dev-loop] %s\n' "$*" >&2; }
+
+usage() {
+  cat >&2 <<'EOF'
+dev-loop --issue <N> [--repo owner/repo] [--work-dir <dir>] [--max <n>] [--test-cmd "<cmd>"]
+
+  Runs in --work-dir (default: cwd) on its current branch — a worktree handed to it.
+  Implements the checkbox plan in issue <N>, gating each commit with Codex, until
+  the plan is done or --max iterations (default 10) is hit. Writes the completion
+  signal to $DEV_LOOP_BUILDS_ROOT/<branch>/status.json.
+EOF
+  exit 2
+}
+
+while [ $# -gt 0 ]; do case "$1" in
+  --issue) ISSUE="$2"; shift 2;;
+  --repo) REPO="$2"; shift 2;;
+  --work-dir) WORK_DIR="$2"; shift 2;;
+  --max) MAX="$2"; shift 2;;
+  --test-cmd) TEST_CMD="$2"; shift 2;;
+  -h|--help) usage;;
+  *) die "unknown arg: $1";;
+esac; done
+[ -n "$ISSUE" ] || usage
+command -v claude >/dev/null || die "claude CLI not found"
+command -v codex  >/dev/null || die "codex CLI not found"
+
+cd "$WORK_DIR"
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || die "not a git worktree: $WORK_DIR"
+for p in $PROTECTED; do [ "$BRANCH" = "$p" ] && die "refusing to run on protected branch: $BRANCH"; done
+BUILD_DIR="$BUILDS_ROOT/$BRANCH"; mkdir -p "$BUILD_DIR"
+
+# Fetch the plan (issue body) for context; never modify the issue.
+ISSUE_BODY=""
+if [ -n "$REPO" ]; then
+  ISSUE_BODY="$(gh issue view "$ISSUE" --repo "$REPO" --json title,body -q '"# " + .title + "\n\n" + .body' 2>/dev/null || true)"
+else
+  ISSUE_BODY="$(gh issue view "$ISSUE" --json title,body -q '"# " + .title + "\n\n" + .body' 2>/dev/null || true)"
+fi
+PROMPT="$(cat "$PROMPT_FILE")"
+
+# ---- write the completion signal and exit --------------------------------------
+signal() {   # signal <outcome> <summary> [anchor]
+  local outcome="$1" summary="$2" anchor="${3:-}"
+  python3 - "$BUILD_DIR/status.json" "$ISSUE" "$BRANCH" "$outcome" "$summary" "$anchor" <<'PY'
+import json, sys
+path, issue, branch, outcome, summary, anchor = sys.argv[1:7]
+json.dump({"issue": issue, "branch": branch, "loop": "dev",
+           "outcome": outcome, "summary": summary, "anchor": anchor},
+          open(path, "w"), indent=2)
+PY
+  log "signal: outcome=$outcome ($BUILD_DIR/status.json)"
+}
+
+# ---- one Claude implementation pass --------------------------------------------
+claude_pass() {   # claude_pass <extra feedback> -> prints Claude's stdout
+  local feedback="$1"
+  claude --model "$MODEL" --effort "$EFFORT" \
+    --permission-mode bypassPermissions --print --no-session-persistence \
+    "You are implementing work item #$ISSUE in $(basename "$WORK_DIR") (branch $BRANCH).
+
+## The work item (your checkbox plan)
+
+$ISSUE_BODY
+
+${feedback:+## Reviewer blockers to fix now}
+${feedback}
+
+$PROMPT"
+}
+
+# ---- one Codex correctness gate on a diff range --------------------------------
+codex_blockers() {   # codex_blockers <range> -> echoes blocker count; writes review
+  local range="$1" out; out="$BUILD_DIR/review-$(date +%s).json"
+  local diff; diff="$(git diff "$range" 2>/dev/null | head -c 200000)"
+  [ -z "$diff" ] && { echo 0; return 0; }
+  codex exec -m "$CODEX_MODEL" --output-schema "$SCHEMA" -o "$out" \
+    "Review this diff for CORRECTNESS only (is it broken?) — not style or structure.
+Focus: bugs, broken behavior, missing/incorrect tests, security. Return the schema.
+
+$diff" >/dev/null 2>&1 || { echo 0; return 0; }   # gate is best-effort in v1
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(1 for i in d.get("issues",[]) if i.get("severity")=="blocker"))' "$out" 2>/dev/null || echo 0
+}
+
+# ---- the loop ------------------------------------------------------------------
+START_HEAD="$(git rev-parse HEAD)"
+feedback=""; outcome="capped"; summary="hit the $MAX-iteration cap"
+for i in $(seq 1 "$MAX"); do
+  log "iteration $i/$MAX"
+  before="$(git rev-parse HEAD)"
+  cl_out="$(claude_pass "$feedback" 2>&1 | tee "$BUILD_DIR/claude-$i.log")" || true
+  after="$(git rev-parse HEAD)"
+  status_line="$(printf '%s\n' "$cl_out" | grep -oE 'DEV_LOOP_STATUS: (done|blocked)[^\n]*' | tail -1 || true)"
+
+  if printf '%s' "$status_line" | grep -q 'blocked'; then
+    outcome="failed"; summary="${status_line#DEV_LOOP_STATUS: }"; break
+  fi
+
+  if [ "$after" = "$before" ] && ! printf '%s' "$status_line" | grep -q 'done'; then
+    outcome="failed"; summary="no progress and no status on iteration $i"; break
+  fi
+
+  blockers=0
+  [ "$after" != "$before" ] && blockers="$(codex_blockers "$before..$after")"
+  log "codex blockers: $blockers"
+
+  if printf '%s' "$status_line" | grep -q 'done' && [ "$blockers" -eq 0 ]; then
+    outcome="done"; summary="${status_line#DEV_LOOP_STATUS: }"; break
+  fi
+  feedback="$(cat "$BUILD_DIR"/review-*.json 2>/dev/null | tail -c 4000)"
+done
+
+# ---- reality anchor: run the test command if one was given ---------------------
+anchor=""
+if [ -n "$TEST_CMD" ]; then
+  if bash -c "$TEST_CMD" >"$BUILD_DIR/test.log" 2>&1; then anchor="tests pass: $TEST_CMD"
+  else anchor="TESTS FAIL: $TEST_CMD"; [ "$outcome" = "done" ] && { outcome="failed"; summary="claimed done but $TEST_CMD failed"; }
+  fi
+fi
+
+signal "$outcome" "$summary" "$anchor"
+[ "$outcome" = "done" ] && exit 0 || exit 1

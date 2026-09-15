@@ -16,6 +16,15 @@ Identify which question is being answered — from the user's prompt, the surrou
 
 The two branches produce very different artifacts — getting this wrong wastes the whole prototype. If the question is genuinely ambiguous and the user isn't reachable, default to whichever branch better matches the surrounding code (a backend module → logic; a page or component → UI) and state the assumption at the top of the prototype.
 
+## Salvage mode (when a flow asks for it)
+
+The default is throwaway. But a caller — e.g. a pipeline's design stage — may ask for **salvage
+mode**: build the UI variations in the project's **real design system / component library** and
+**keep** the approved one as the starting point for real work, instead of deleting it. When salvage is
+requested, rules 1 and 4/6 below invert (production-grade components, don't delete); everything else
+(one command, surface the state, several variations on one route) still holds. The caller owns what
+happens to the approved variation afterward.
+
 ## Rules that apply to both
 
 1. **Throwaway from day one, and clearly marked as such.** Locate the prototype code close to where it will actually be used (next to the module or page it's prototyping for) so context is obvious — but name it so a casual reader can see it's a prototype, not production. For throwaway UI routes, obey whatever routing convention the project already uses; don't invent a new top-level structure.

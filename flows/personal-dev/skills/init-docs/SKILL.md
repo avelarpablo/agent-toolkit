@@ -11,6 +11,22 @@ The goal is to give coding agents enough context to navigate the
 repository, follow conventions, and verify their work — and to give
 sync-docs a complete structure to maintain over time.
 
+## Two additions for the development-system pipeline
+
+- **Deep product / vision / domain grill.** Beyond today's pattern interview, open the interview with
+  a **product grill** (reuse the [`grill`](../../../../primitives/skills/grill/SKILL.md) engine, or
+  `grill-prd`): what the app *is*, who it's for, where it's going, and the core domain nouns/verbs.
+  That is what fills `CONTEXT.md` and the glossary with meaning rather than headings — the knowledge
+  every downstream grill and loop then consumes instead of being re-briefed.
+- **`MONITORING.md` — doc-first observability.** Emit a `MONITORING.md` describing how to *observe*
+  the app: log locations, how to pull logs, dashboards, key signals. It **mirrors the `CONTEXT.md`
+  monorepo hierarchy** — per-project `{project}/MONITORING.md` beside each `CONTEXT.md`, plus an
+  optional **root** `MONITORING.md` for shared/cross-cutting infra (shared DB, gateway, CI). It lives
+  at project root next to `CONTEXT.md` (knowledge, not config — **not** in `.agents/`), so
+  `init-docs`/`sync-docs` place and maintain it with the monorepo logic they already have. (A later
+  log-fetching skill resolves the nearest `MONITORING.md` to close the feedback loop into
+  `log → triage → diagnose`.)
+
 ## Output
 
 ### Always produced
@@ -46,6 +62,7 @@ sync-docs a complete structure to maintain over time.
 | `.agents/standards/web/navigation.md` | Web UI with navigation detected |
 | `DESIGN.md` | UI framework detected |
 | `REFERENCES.md` | External references or ported patterns detected |
+| `MONITORING.md` | Any deployable app — how to observe it (see below). Mirrors the `CONTEXT.md` hierarchy: per-project `{project}/MONITORING.md`, plus an optional root one for shared infra. |
 
 ### Produced in monorepos (per workspace member)
 

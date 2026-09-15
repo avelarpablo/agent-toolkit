@@ -10,6 +10,24 @@ all knowledge files: agentic layer, standards, and documentation. The
 goal is to capture knowledge gained during implementation before it
 evaporates.
 
+## Feature-level docs pass (the pipeline's `stage:docs`)
+
+When the pipeline reaches `stage:docs` — a feature has passed verification and is about to promote —
+the orchestrator runs this skill in **feature-level mode** on the `feat/…` worktree, to pay down the
+**comprehension debt** every AFK loop accrues (the gap between what the repo now contains and what you
+understand). In this mode:
+
+- **Sources are the durable artifacts, not the conversation** — the live session that built the
+  feature is long gone (FIC). Read the **git diff** of `feat/…` since it branched, the **verification
+  report(s)** posted to the feature issue, and the **issue tree** (PRD → Design Doc → slices). Those
+  are what the docs must reflect, *including* verification-driven changes.
+- **AFK-able, with a light human review** — propose the doc changes; the human skims and approves.
+- After docs are reviewed, the orchestrator promotes `feat → main`. So this is the last stage before
+  a feature ships — the docs land with the code, never after it.
+
+Everything below is the general (interactive, conversation-aware) mode; the feature-level pass uses
+the same detection and update machinery with the artifact-based sources above.
+
 ## Prerequisites
 
 This skill requires `.agents/governance.md` to exist. If it doesn't,

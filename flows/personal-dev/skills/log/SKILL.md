@@ -13,11 +13,20 @@ created.
 
 ## Supported types
 
+Each type is a `kind:` label — the namespace the pipeline's inbox is built on. A logged item carries
+its `kind:` and **no `stage:` label**: absence of a stage label *is* the inbox, so the orchestrator
+(which only acts on `stage:*`) never picks up something unanalyzed. The `kind:` decides which analysis
+runs when the item is later picked up (`bug`→`diagnose`, `tech-debt`→scoped refactor, `wishlist`→
+wayfinding), all converging at `stage:ready`.
+
 | Type | Label | Label color | Description |
 |------|-------|-------------|-------------|
-| `wishlist` | `wishlist` | `#0E8A16` (green) | Feature ideas and future enhancements |
-| `tech-debt` | `tech-debt` | `#D93F0B` (red) | Known shortcuts, outdated patterns, scaling concerns |
-| `bugfix` | `bugfix` | `#E4E669` (yellow) | Bugs observed during development or conversation |
+| `wishlist` | `kind:wishlist` | `#0E8A16` (green) | Feature ideas and future enhancements |
+| `tech-debt` | `kind:tech-debt` | `#D93F0B` (red) | Known shortcuts, outdated patterns, scaling concerns |
+| `bug` | `kind:bug` | `#E4E669` (yellow) | Bugs observed during development or conversation |
+
+(Aliases: `/log-bugfix` still works → `kind:bug`.) The canonical strings come from
+`setup-agent-skills`; use those if they differ.
 
 ## Invocation
 
@@ -139,6 +148,12 @@ If the label doesn't exist on the target repo, create it first:
 ```bash
 gh label create <label> --description "<description from table>" --color "<color>" --force
 ```
+
+**Never apply a `stage:` label** — a logged item is inbox, not buildable.
+
+For **`kind:wishlist`**, set the item's Project `Status` to **Ideas** (`log` is the disjoint writer
+of that Status value — see the dev-flow provisioning). `bug` and `tech-debt` get no Status until they
+are picked up.
 
 ### 8. Report
 

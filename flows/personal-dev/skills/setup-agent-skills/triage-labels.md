@@ -1,7 +1,8 @@
-# Triage Labels
+# Triage Labels — the triage state profile
 
-The **triage axis** governs getting an issue *ready to build* — it is one of several label namespaces
-in the pipeline. This file maps the triage roles to the actual strings in this repo's tracker; the
+This file is the **triage state profile**: it parameterizes the `triage` engine (a primitive) with
+this flow's role vocabulary. The **triage axis** governs getting an issue *ready to build* — it is one
+of several label namespaces in the pipeline. This file maps the triage roles to the actual strings in this repo's tracker; the
 full label state machine (kind / triage / stage / needs:human / blocked) is in
 [dev-flow-provisioning.md](./dev-flow-provisioning.md).
 

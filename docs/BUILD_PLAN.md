@@ -4,7 +4,9 @@ The implementation plan for the system designed in [PROCESS.md](PROCESS.md). `PR
 **spec** (what & how it's designed); this is the **plan** (what to build, in what order, and how to
 know each piece is done).
 
-> Status: **0.1, 0.1a, 0.1b done**; work-kind model (1.1a), branch standard and stage gates decided. Phase 0 is hand-built; the system starts self-hosting after Phase 3.
+> Status: **all build items 0.1 → 4.4 built and committed** (first versions; Phase 5 deferred).
+> Remaining before real use: exercise the loops on a real feature (behavioral verification) and retire
+> the three superseded grills. Phase 0 was hand-built; the build phase self-hosts after 3.1.
 
 ## The bootstrapping principle
 

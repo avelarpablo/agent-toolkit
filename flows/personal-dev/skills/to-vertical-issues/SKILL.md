@@ -1,6 +1,6 @@
 ---
 name: to-vertical-issues
-description: Break a plan, spec, or PRD into independently-demoable vertical slice issues on GitHub. Use when user wants to convert a PRD/plan into implementation tickets, break down work into issues, or slice a spec into shippable increments. Enforces mandatory code exploration, demo-command validation, and anti-pattern rejection before publishing.
+description: Break a Design Doc into independently-demoable vertical slice issues on the pipeline's feat/+slice/ model — each a child of the feature, labelled stage:ready, carrying a checkbox implementation plan, a blocked-by graph, and a real demo command. Enforces mandatory code exploration, demo-command validation, anti-pattern rejection, and a two-family slicing gate (with the demo command actually running) before publishing. Use to convert a Design Doc into buildable slice tickets.
 ---
 
 # To Vertical Issues
@@ -15,7 +15,7 @@ The litmus test for every slice you produce: **"After ONLY this slice merges, wh
 
 ### 1. Gather the source material and execution context
 
-Work from conversation context. If the user passes an issue reference (number, URL, or path), fetch its full body and comments from the issue tracker.
+Work from the **Design Doc** (published by `to-design-doc`) and its parent PRD — fetch their full bodies from the tracker. The Design Doc's verified how + the PRD's success criteria are the source; the slices deliver those criteria incrementally.
 
 **Before drafting slices, understand the execution context.** Ask (or infer from the PRD/conversation):
 - How much time is available? (tonight vs. a sprint vs. a quarter)
@@ -116,14 +116,33 @@ Then ask:
 
 Iterate until approved.
 
+### 5.6. Slicing gate (MANDATORY, before publishing)
+
+Principle 11 — the slice set is an artifact, so a second family reviews it, and this gate has a
+**reality anchor**: the demo commands actually run.
+
+1. **Run each slice's demo command now** and confirm the fail-before is real (it fails today). A demo
+   you can't run is not a demo — the anchor is that it executes.
+2. **Two-family critique** — write the slice set to a draft file and run the critique loop:
+
+   ```bash
+   REVIEW="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/review-loop/review-loop"
+   "$REVIEW" --files <slices-draft.md> --criteria <this skill>/SLICING-CRITERIA.md --rounds 2
+   ```
+
+   Address every blocker (independence, demo reality, plan executability) before publishing.
+
 ### 6. Publish issues to GitHub
 
-For each approved slice, publish using the template below. Apply `needs-triage` label. Publish in dependency order (blockers first) so you can reference real issue numbers.
+For each approved slice, publish using the template below as a **child of the feature (PRD) issue**,
+labelled **`stage:ready`** (buildable — the orchestrator can pick it up); a slice waiting on a blocker
+also carries **`blocked`**. Slices branch off their **`feat/…`** integration branch. Publish in
+dependency order (blockers first) so you can reference real issue numbers.
 
 <issue-template>
 ## Parent
 
-Link to the parent issue (if source was an existing issue).
+Link to the parent **feature (PRD)** issue (`owner/repo#N` if it lives in an umbrella repo).
 
 ## What to build
 
@@ -138,6 +157,13 @@ One sentence. Concrete. Observable.
 ```
 <exact command>
 ```
+
+## Implementation plan
+
+The checkbox-level, agent-executable steps the dev loop consumes (ralph checks these off):
+
+- [ ] step 1 — …
+- [ ] step 2 — …
 
 ## Acceptance criteria
 

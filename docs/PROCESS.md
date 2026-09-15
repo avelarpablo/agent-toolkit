@@ -75,9 +75,10 @@ thing is a **cycle**, not a line:
 2. **GitHub issues are the state machine and the source of truth.** Labels drive transitions;
    the issue is the durable, portable record. Durable cross-session state lives here — not in
    temp files.
-3. **One issue per independently-buildable unit.** A task is one issue; slices become issues
-   only when each ships on its own. Don't multiply issues for work that isn't separately
-   shippable.
+3. **One issue per independently-buildable unit.** A task is one issue; slices become issues only
+   when each is independently **integrable and demoable** (its own worktree/branch) — that is the
+   test, *not* whether it ships to the customer on its own (slices merge into `feat/…` and release
+   feature-level). Don't multiply issues for work that isn't a separately-buildable unit.
 4. **Context before features.** A project's knowledge base (`CONTEXT.md`, glossary, ADRs) is
    established first so agents stop needing to be re-briefed.
 5. **Prototype before build.** UI is pinned down as an approved prototype before implementation,
@@ -103,9 +104,13 @@ thing is a **cycle**, not a line:
     [gate](#stage-gates--no-artifact-is-final-unreviewed) before that artifact is published and the
     stage advances. But a second model is **not** an external verifier: models sharing a context can
     agree at industrial scale. So each gate must declare the **reality anchor** it rests on — a test
-    that ran, a build that compiled, a human who signed off. Where an anchor exists the gate is
-    binding; where none does (documents), the gate is **advisory input to your judgment**, never a
-    green light. See [Grounding](#grounding--anchors-caps-and-counter-metrics).
+    that ran, a build that compiled, a human who signed off. **Running** the gate is mandatory
+    everywhere and its blockers must reach zero before publishing; what differs is **who clears
+    them**. Where an anchor exists, the anchor clears the gate (tests pass → zero blockers is a fact).
+    Where none does (documents), *you* clear it: the second family surfaces the blockers, and driving
+    them to zero is **your judgment**, never an automated green light — a document gate is advisory in
+    *what it concludes*, not optional in *whether it runs*. See
+    [Grounding](#grounding--anchors-caps-and-counter-metrics).
 12. **Every cycle has two exits.** Success is one. A hard cap is the other. A loop whose only exit is
     success will, on a blocker it cannot fix, run until it is stopped by hand — and bill silently
     the whole way.
@@ -222,11 +227,14 @@ Two paths, chosen per feature by design-step triage:
 - **Frozen screenshots** (visual acceptance reference) → the **Design Doc / feature issue**
   (proof-style artifact, canonical, in the tracker; QA reads them). Both paths.
 - **Salvaged code** → a short-lived **`design/<issue>-<slug>` branch** (code belongs in git, not
-  as an issue attachment). On feature-branch creation it **seeds the `feat/…` integration branch**,
-  so every slice that branches off `feat/…` inherits the prototype automatically; the `design/…`
-  branch is then deleted (its content lives on in `feat/…`; the screenshots remain the durable
-  reference). For single-unit work with no `feat/…` branch, the `design/…` branch seeds the lone
-  `slice/…` or `task/…` branch instead.
+  as an issue attachment). **It is held from approval until the target branch is created** — because
+  the target is not known at approval: `feat/…` exists only once the feature is sliced into ≥2 units
+  ([Branch naming](#branch-naming)), and single-unit work seeds a lone `slice/…`/`task/…` instead.
+  On **feature-branch (or lone-unit-branch) creation** — after slicing decides the shape — 1.2(d)
+  **seeds** that branch from `design/…` (so every slice branching off `feat/…` inherits the prototype
+  automatically) and **then deletes** `design/…` (its content lives on in the seeded branch; the
+  screenshots remain the durable reference). Approval freezes the screenshots and *holds* the branch;
+  it does **not** seed or delete, because there is nothing yet to seed.
 
 **Design Doc — *how*.** How we build it, **verified against the real codebase**: modules,
 interfaces, schema changes, API contracts, testing strategy, and the approved prototype as
@@ -259,8 +267,9 @@ making it work** — no refactor, no design patterns (refactor loop), no e2e (QA
 to fit the pipeline:
 
 - **Stops at "dev-done"; the orchestrator owns stage transitions.** ralph must *not* close the issue
-  or unlock downstream (that's policy now) — it signals completion and the orchestrator flips the
-  `stage:` label and merges into `feat/…`.
+  or unlock downstream (that's policy now) — it signals completion via the
+  [completion signal](#the-completion-signal--how-a-loop-tells-the-orchestrator-its-done) and the
+  orchestrator flips the `stage:` label and merges into `feat/…`.
 - **Runs in the worktree/slice-branch it's handed** — self-branching (`RALPH_FEATURE_BRANCH`)
   disabled; ralph never creates/destroys branches (orchestrator + scripts do).
 - **Implementation-only prompt**, replacing the current project-specific `prompt.md`.
@@ -280,12 +289,40 @@ assessed and refactored to the **best design pattern for the feature and for mai
 Patterns are found-and-applied *here*, against the real written code, rather than guessed up front
 (the Design Doc may name candidate patterns; the refactor loop confirms and applies them).
 
-**QA loop.** A **two-agent dialogue** (different families) against the **real, assembled, refactored
-app**: a **driver** owns the Playwright MCP (only one hand on the browser) and executes; a
+**QA loop.** Slice-level (it runs in the slice's worktree, before the merge into `feat/…`). A
+**two-agent dialogue** (different families) against the **slice's own real, assembled, refactored
+surface** — a vertical slice is itself independently runnable/demoable, so QA drives *that*, not the
+fully-integrated feature (integration is exercised later, at the feature-level `stage:verify` human
+gate). A **driver** owns the Playwright MCP (only one hand on the browser) and executes; a
 **strategist/critic** proposes what & how to test and challenges coverage ("empty state? error path?
 the prototype's hover states?"). They converge on a test plan, capture screenshots, check against
 the approved prototype, and — because the surface is now stable — **write the e2e suite here**. The
 one genuinely **new** runner/skill the build phase needs.
+
+### The completion signal — how a loop tells the orchestrator it's done
+
+Every automated transition depends on one fact: a build loop and the orchestrator are **separate
+processes**. The orchestrator launches a loop into a worktree and returns; a later pass has to learn
+how that loop ended. A loop **cannot** report by writing a `stage:` label — the orchestrator is the
+[one writer](#state-machine--labels) of that field, and ralph never touches labels — so the signal is
+**out-of-band**: a **status file** in the durable build dir, plus a process exit code for the
+launcher.
+
+> **`~/.ralph/builds/<branch>/status.json`** — one schema for every loop (dev, refactor, QA), so the
+> orchestrator reads exactly one shape:
+> ```json
+> { "issue": 42, "branch": "slice/42-empty-state", "loop": "dev",
+>   "outcome": "done", "summary": "12 checkboxes complete", "anchor": "12/12 tests pass" }
+> ```
+
+It lives in `~/.ralph/builds/<branch>/` (not `.build/` in the worktree) precisely because it must
+**survive worktree teardown** — the orchestrator may read it after the loop's tree is gone. `outcome`
+has three values and they map straight onto the [caps](#grounding--anchors-caps-and-counter-metrics):
+`done` → the orchestrator advances the `stage:` label; `capped` → the loop hit its hard cap
+(principle 12), so the orchestrator flips `needs:human` and surfaces `summary`; `failed` → an
+unexpected error, same `needs:human` hold. `anchor` records the reality anchor the outcome rests on
+(the test run, the e2e pass) so the advance is auditable. The orchestrator translating this file into
+a label flip is the **only** thing that moves a slice forward — no file, no transition.
 
 **Verification — the human gate.** Feature-level and serial: once all slices have merged into the
 `feat/…` integration branch, you test the **assembled feature** in the `feat/…` worktree (the
@@ -339,8 +376,11 @@ orphaned references, ordering violations, unfalsifiable acceptance criteria, res
 questions, load-bearing unstated assumptions, and scope leaks** (C-1…C-8). Every one of those was found by hand in
 this system's own spec before the loop existed.
 
-**On demand now, a gate later** — `to-prd`/`to-design-doc` will run it pre-publish once the criteria
-have proven themselves on real documents.
+**A mandatory pre-publish gate, not on-demand** — principle 11 superseded the earlier
+"on demand now, gate later" plan: `to-prd`/`to-design-doc` run the critique loop as a **required**
+gate before publishing, at the [round floor](#stage-gates--no-artifact-is-final-unreviewed) their
+stage sets. The loop remains separately invokable on any document, but publishing an artifact no
+longer skips it.
 
 ### Stage gates — no artifact is final unreviewed
 
@@ -351,17 +391,21 @@ only in *which criteria* and *how many rounds*.
 
 | Stage | Artifact | Criteria | Rounds | **Reality anchor** |
 |---|---|---|---|---|
-| PRD grill | the PRD | success criteria measurable? scope bounded? implementation detail leaking in? | 1–2 | **none** → advisory; you decide |
+| PRD grill | the PRD | success criteria measurable? scope bounded? implementation detail leaking in? | 2 | **none** → advisory; you decide |
 | Design Doc grill | the Design Doc | claims verified against code? alternatives considered? coherence | 3 | partial — claims checked **against the code** |
-| Slicing | slice + implementation plan | independently shippable? demo command real? plan executable? | 1 | the **demo command runs** |
+| Slicing | slice + implementation plan | independently shippable? demo command real? plan executable? | 2 | the **demo command runs** |
 | Dev | the diff | correctness | 1 (inline) | **unit + integration tests pass** |
 | Refactor | the diff | per-repo standards | 3 | **tests still pass** after each fix |
 | QA | the assembled app | e2e vs the frozen prototype | — | **e2e suite passes**; screenshots compared |
 | Verification | the verification report | every success criterion actually exercised? | 1 | **you signed off** |
 
-**Rounds scale with stakes**, and this is the same primitive throughout: `review-loop` at N rounds
-is the dialogue; ralph's inline Codex gate is the same thing at one round. A cheap stage pays one
-round; a Design Doc that will spawn a dozen slices pays three.
+**Rounds scale with stakes, but the floor is two** — because `review-loop` round 1 is the *authoring*
+family (Claude), and the **second family (Codex) does not enter until round 2**. A one-round gate is
+therefore single-family and fails principle 11 outright, so every `review-loop`-based gate pays **at
+least two** rounds; a Design Doc that will spawn a dozen slices pays three. The lone exception is
+**Dev's `1 (inline)`**: ralph's inline gate is structurally two-family already — Claude *writes* the
+diff and Codex *gates* it — so one pass there is genuinely a second-family review. (Verification's
+single round is anchored on a **human**, not a model, so principle 11 is satisfied by you.)
 
 **The criteria are the work, not the wiring.** A gate with vague criteria produces vague findings
 and trains you to ignore it. Each criteria doc is written like
@@ -423,6 +467,7 @@ where you verify the assembled feature. `main` itself is only ever touched by th
 |---|---|---|
 | Loop scratch / working state | `.build/` in the worktree (gitignored) | Dies with the worktree; no loss |
 | Heavy proof (screenshots, video, logs) | `~/.ralph/builds/<branch>/` | Survives teardown; too heavy for git |
+| [Completion signal](#the-completion-signal--how-a-loop-tells-the-orchestrator-its-done) (`status.json`) | `~/.ralph/builds/<branch>/` | Must outlive the worktree — the orchestrator reads it after teardown |
 | e2e tests | committed to the branch | It's code; merges naturally |
 | Proof summary + verification report | the GitHub issue | Portable, permanent, canonical |
 
@@ -442,14 +487,15 @@ design branch do.
 - **Issue number, always** — the tracker is the source of truth; the number makes branch ↔ issue
   traceability automatic (orchestrator, cleanup, and humans all map a branch to its state). A
   branch with no issue is a smell. Cleanup keys off this number, same rule as `~/.ralph/builds/`.
-- **Base is contextual, not encoded** (slices off their `feat/…`; `feat/…` and `task/…` off main).
+- **Base is contextual, not encoded** (a slice off its `feat/…` — or off `main` when it is the
+  **lone** slice of a single-slice feature, which has no `feat/…`; `feat/…` and `task/…` off main).
 
 | Type | For | Branches off | Lifecycle |
 |---|---|---|---|
 | `feat/` | a multi-slice feature's integration branch ("main feature branch") | main (seeded by `design/…` if any) | receives slice merges; verified + docs here; **promoted to main** (deploy trigger); torn down |
-| `slice/` | one vertical slice | its `feat/…` branch | build loops in a worktree; merged into `feat/…`; torn down |
+| `slice/` | one vertical slice | its `feat/…` branch (or `main` if it is the lone slice) | build loops in a worktree; merged into `feat/…` — or straight to `main` when it is the lone slice of a single-slice feature; torn down |
 | `design/` | salvaged prototype for a feature | main (in a worktree) | short-lived; seeds `feat/…` (or the lone slice/task), then deleted |
-| `task/` | one small, self-contained unit (no `feat/…`) | main | build (dev → verify); merged straight to main; torn down |
+| `task/` | one small, self-contained unit (no `feat/…`) | main | carries the **full lifecycle on its one issue** (dev → refactor → qa → verify → docs — the same stages a feature spreads across slices, per [State machine](#state-machine--labels)); merged straight to main; torn down |
 | `fix/` | a verification finding or feedback-loop bug (`bug`) | the `feat/…`/slice if in-scope & open, else main | merged; torn down |
 
 **The standard is [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)** —
@@ -469,7 +515,8 @@ The **integration branch (`feat/…`) exists only when a feature has ≥2 slices
 (a `task/…`, a lone `slice/…`, a one-off `fix/…`) skips it and merges to `main` once verified.
 
 **What protects `main` is verification, not the prefix.** `main` and any deploy branches are
-protected, and **`main` accepts only a branch that has passed `stage:verify`** — whatever its type.
+protected, and **`main` accepts only a branch that has cleared `stage:docs`** (which structurally
+follows a passed `stage:verify` — verify → docs → promote) — whatever its type.
 Stating the invariant directly (rather than as a whitelist of permitted prefixes) is what keeps
 principle 7 true: the whitelist had already drifted out of sync with the branch table, permitting
 and forbidding `fix/ → main` one line apart.
@@ -488,7 +535,8 @@ Three namespaces, each answering a different question — never overlapping:
 | `kind:` | what triggered this work | `log`, at capture |
 | `triage:` | is it ready to build? (**pre**-buildable) | you, via `triage` |
 | `stage:` | where is it in the build? (**buildable**) | the orchestrator |
-| `needs:human` | who executes it — a **modifier**, not a state | you, or a loop hitting its cap |
+| `needs:human` | who executes it — a **modifier**, not a state | you, or the orchestrator (on a `capped`/`failed` [completion signal](#the-completion-signal--how-a-loop-tells-the-orchestrator-its-done)) — never the loop itself, which only writes `status.json` |
+| **Status** *(Project field)* | the product-facing lifecycle phase (Roadmap grouping) | each phase's owner, **disjoint per transition**: `log`→Ideas · producers→Shaping · orchestrator→In-development · built-in→Done (see [Progress & tracking](#progress--tracking)) |
 | **Environment** *(Project field)* | where merged code has actually reached | **CI**, never the orchestrator |
 
 **One writer per field.** The orchestrator never writes Environment; CI never writes `stage:`. Two
@@ -511,11 +559,14 @@ merges into `feat/…`; **feature-level** verify and docs run on the feature (PR
 
 | Stage label | Meaning | Transition trigger |
 |---|---|---|
-| `stage:design` | prototype variations generated in a `design/…` worktree; carries `needs:human` while awaiting your pick | **you approve one** → screenshots frozen onto the issue, `design/…` seeds `feat/…` (or the lone slice/task branch), `design/…` deleted |
+| `stage:design` | prototype variations generated in a `design/…` worktree; carries `needs:human` while awaiting your pick | **you approve one** → screenshots frozen onto the issue; `design/…` **held** (seeded + deleted later, at target-branch creation — see [Documents](#documents)); `stage:design` cleared → the feature returns to **shaping** (Design Doc → slicing), carrying **no** `stage:` label until the rollup sets `stage:verify` |
 
-It is a stage rather than a roadmap activity because it **produces code in a worktree** and holds a
-human gate — the two signatures of a build stage. PRDs and Design Docs are documents; this one
-commits. Non-UI features skip it entirely.
+It carries a `stage:` label (rather than being a label-less shaping activity) because it **produces
+code in a worktree** and holds a human gate — the two signatures of orchestrator-tracked work, so the
+orchestrator dispatches it and it appears on the dev Board. PRDs and Design Docs are documents; this
+one commits. That it *also* sits under **Shaping** on the product Roadmap is not a contradiction —
+views group the same item differently — but from the product angle the look/feel is still being
+shaped. Non-UI features skip it entirely.
 
 *On the slice issue:*
 
@@ -524,18 +575,42 @@ commits. Non-UI features skip it entirely.
 | `stage:ready` | eligible to start | orchestrator picks it up |
 | `stage:dev` | dev loop running | dev-loop checkboxes done |
 | `stage:refactor` | refactor loop running | review-loop returns zero blockers |
-| `stage:qa` | QA loop running | e2e written, proof captured → **merge into `feat/…`**; slice done |
+| `stage:qa` | QA loop running | e2e written, proof captured → **merge into `feat/…`**; orchestrator **closes the slice issue** (slice done) |
+
+A merged slice is **done as a unit**, so the orchestrator **closes its issue** on merge — slice PRs
+target `feat/…`, not the default branch, so they never auto-close (per
+[Release & deploy](#release--deploy)) and the orchestrator keeps ownership. Closing is what takes the
+slice **out of the machine**: it drops no `stage:` label, and a slice with no `stage:` would otherwise
+match the [inbox predicate](#work-kinds--the-inbox-and-its-exits) — so the inbox is defined as **open**
+issues only, and closing is the clean exit.
 
 *On the feature (PRD) issue, once all slices have merged into `feat/…`:*
 
 | Stage label | Meaning | Transition trigger |
 |---|---|---|
 | `stage:verify` | **human gate** — verify on the worktree of the branch that will promote (`feat/…` for a multi-slice feature; the unit's own branch otherwise) | you sign off |
-| `stage:docs` | feature-level `sync-docs` pass on `feat/…` | docs reviewed → **promote `feat → main`** (deploy trigger) → close |
+| `stage:docs` | feature-level `sync-docs` pass on `feat/…` | docs reviewed → orchestrator **opens the `feat → main` promote PR** (deploy trigger; the [PR template](#release--deploy) carries the closing keywords) → merge auto-closes the feature issue |
+
+**What moves a feature to `stage:verify` is a rollup, not a single slice.** No individual slice can
+flip the feature — the feature is done only when **all its slice children are closed/merged**. The
+orchestrator reads the parent/child graph (from `to-vertical-issues`) and, on closing the **last**
+open slice of a feature, moves the feature (PRD) issue from the build phase to `stage:verify`. This is
+the join that reassembles the parallel slices into one promotable feature.
 
 A waiting slice carries the existing `blocked` label. These are **canonical** names; real strings per
-repo come from `setup-agent-skills`. (Single-unit `task/…` work carries all stages on its one issue
-and promotes straight to `main`.)
+repo come from `setup-agent-skills`.
+
+**Single-unit work (`task/…`, a lone `slice/…`, a one-off `fix/…`) carries all stages on its one
+issue**, and the triggers written above for `feat/…` read against **its own branch** instead (the
+same "own branch otherwise" qualifier `stage:verify` already carries):
+
+- **`stage:qa` →** there is no `feat/…` to merge into and the issue is **not** closed here — the unit
+  *is* the promotable thing, so on QA-done it advances straight to `stage:verify` on its own branch.
+- **`stage:docs` →** the `sync-docs` pass runs on that same branch; then the orchestrator opens the
+  **`<branch> → main`** promote PR and the merge closes the issue.
+
+So the multi-slice close-and-rollup (merge into `feat/…`, close the slice, roll the feature up) is the
+*multi-slice* specialization; single-unit work runs the identical stage sequence without a `feat/…`.
 
 ### Work kinds — the inbox and its exits
 
@@ -554,8 +629,11 @@ For a *hard* bug the diagnosis **is** the design doc — root cause, blast radiu
 rejected fixes. For a trivial one it's a sentence. Ceremony scales with difficulty, exactly as it
 scales with scope at the [altitudes](#wayfinding--the-universal-front-door).
 
-**The inbox is `kind:` with no `stage:` label.** Absence of a stage label *is* the inbox, so the
-orchestrator — which only ever acts on `stage:*` — can never pick up something unanalyzed.
+**The inbox is an `open` issue with a `kind:` label and no `stage:` label.** Absence of a stage label
+*is* the inbox, so the orchestrator — which only ever acts on `stage:*` — can never pick up something
+unanalyzed. **`open` is load-bearing:** a merged slice and a `wontfix` are both closed with no
+`stage:`, and requiring `open` is what keeps them out of the inbox (a closed issue is out of the
+machine, whichever way it left).
 
 **Research and POC are not kinds.** They are **wayfinder-created**: a map ticket names an unresolved
 decision, and research or a POC is *how it gets resolved*. They produce decisions that land in a map,
@@ -606,7 +684,11 @@ CI/CD and **out of scope** (project-specific). The contract at the boundary:
   and the orchestrator keeps ownership; the `feat → main` promote PR *does* auto-close whatever it
   references, which is exactly where the feature issue should close. Cross-repo closes work with
   `owner/repo#N`, so a code-repo promote PR can close a PRD living in the umbrella repo. **The
-  promote PR must reference the issues** or nothing closes — orchestrator's job, via a PR template.
+  promote PR must reference the issues** or nothing closes. Ownership is split: **`setup-agent-skills`
+  provisions the promote-PR template** (carrying `Closes #<feature>`, and `owner/repo#N` for an
+  umbrella PRD) when it scaffolds the repo, and the **orchestrator opens the `feat → main` PR** from
+  that template when a feature leaves `stage:docs`. Template without opener closes nothing; opener
+  without template references nothing — both are named build items (1.1 and 3.1).
 - **Issue lifecycle: close on merge.** verify → docs → promote → **closed (Done)**. Cleanup keys off
   the **merge**, not the close, so branches and `~/.ralph/builds/` are never held hostage to a deploy
   schedule.
@@ -772,21 +854,37 @@ than splitting a view.
 
 | View | Audience | Filter |
 |---|---|---|
-| **Roadmap** | product / design / architecture | Ideas (`kind:wishlist`) → Shaping (PRD, design, Design Doc) → **In development** (any `stage:*`, collapsed to one column) → Done → Environment |
-| **Board** | dev | `stage:ready` → `stage:docs`, every stage granular |
+| **Roadmap** | product / design / architecture | **grouped by Project `Status`**: Ideas → Shaping → In development (collapses every slice-level `stage:*` *and* the label-less sliced feature) → Done; `Environment` shown as a field on Done cards |
+| **Board** | dev | `stage:design` (optional leading column, UI features only) → `stage:ready` → `stage:docs`, every stage granular |
 | **Deployment** | everyone | grouped by `Environment` — **includes closed items** |
 | **Inbox** | triage | has `kind:`, no `stage:` |
 
-Product sees *one* "In development" column where dev sees six — same items, different grouping. That
-is the whole argument for views over separate projects.
+Product sees *one* "In development" column where dev sees each build stage granularly — same items,
+different grouping. That is the whole argument for views over separate projects. `stage:design` is the
+same story one step earlier: the dev Board shows it as its own (optional, UI-only) column because the
+**orchestrator dispatches and tracks it**, while the product Roadmap groups it under **Shaping**
+(`Status = Shaping`) — one item, two groupings, exactly as intended.
+
+**A sliced feature stays visible without a label of its own.** Between `stage:design` clearing and the
+verify rollup, the feature (PRD) issue carries **no** `stage:` label (it is not slice-dispatchable —
+its slices are). Its Roadmap presence comes from the **Project `Status` field** (see
+[Status, the lifecycle field](#progress--tracking)): when the orchestrator slices a feature it sets
+that feature's `Status` to *In development*, derived from its **children's** state, and the
+verify/docs rollup advances it. So the feature is grouped by a field, not by a label it lacks. The
+Board still shows the **slices** in the granular build columns; the feature itself reappears there
+only at `stage:verify`/`stage:docs`. This keeps the feature off the
+[inbox](#work-kinds--the-inbox-and-its-exits) (still open, but it has no `kind:`) and off the
+dispatcher (no `stage:`), while product never loses sight of it.
 
 **Closed items do not vanish.** A built-in workflow sets Status to Done when the issue closes; the
 card stays. Use **auto-archive** to keep views fast (archived items remain in the project and can be
 restored, and archiving is how a project stays under the 50,000-item cap).
 
 **Provisioned, not hand-built.** A repo's Project is created by `setup-agent-skills` alongside its
-labels — every project the system touches gets its board without a manual step. The orchestrator
-then keeps Status in sync as it flips `stage:` labels.
+labels — every project the system touches gets its board without a manual step, including the
+`Status` single-select and its lifecycle values (Ideas / Shaping / In development / Done). Each
+phase's owner then writes its own `Status` transition (the table above); the orchestrator owns the
+build-phase values as it flips `stage:` labels.
 
 **GitHub issue *types* vs `kind:` labels — verified, 2026-08.** Issue types are an
 **organization-level** feature: an org (`OutputLabs`) exposes `Task`/`Bug`/`Feature`, while a
@@ -800,10 +898,25 @@ source of truth in both cases; the type is a projection.
 Design Doc); the moment it's cut into a buildable unit and labeled `stage:ready`, it appears on the
 board and flows through the pipeline.
 
-**Consistency:** the **orchestrator already owns `stage:` transitions**, so in the same step it flips
-a label it also sets the Project's Status field via the API — one writer, no drift. Labels stay
-canonical; Project Status is a derived mirror. (Don't rely on Projects' built-in automations for
-this.)
+**`Status` is the Roadmap's lifecycle field — written by each phase's owner, not a single writer.**
+GitHub Projects makes `Status` the native grouping field (and sets it to *Done* automatically on
+close), so the Roadmap groups by it across the whole lifecycle — which means the **pre-build** phases
+need a writer too, not just the build phase. The rule is **one writer per *transition*** (a disjoint
+baton-pass, never two writers on the same value), which keeps the no-drift guarantee that
+one-writer-per-field gave us:
+
+| `Status` value | Written by | When |
+|---|---|---|
+| *Ideas* | `log` | a `kind:wishlist` item is captured |
+| *Shaping* | `to-prd` / `to-design-doc` | a PRD or Design Doc is published |
+| *In development* | the **orchestrator** | it slices a feature (and as it advances each `stage:`) |
+| *Done* | GitHub built-in workflow | the issue closes |
+
+So `Status` is **not** a pure mirror of `stage:` labels — it is a **superset** that also encodes the
+pre-build phases, which carry no `stage:` label. Labels stay canonical (they are the state machine);
+`Status` is the product-facing lifecycle summary derived alongside them. The `Environment` field is
+separate (CI-written, the Deployment view's grouping) and shown on closed cards. (Don't rely on
+Projects' built-in automations beyond the close→*Done* one.)
 
 **Agent-driven reporting — a `status`/standup skill.** Progress reporting becomes an agent task, not
 a human one: an agent queries the tracker/Project (`gh` + GraphQL) and produces a narrative report on
@@ -820,7 +933,7 @@ does the system impose, and which does the project choose?** One test decides it
 
 | Tier | Rule | Examples |
 |---|---|---|
-| **1 · Enforced shape** | mechanism depends on it; a project that changes it breaks the system | branch format `<type>/<issue#>-<slug>` and its type set · the label **namespaces** (`kind:`/`triage:`/`stage:` + `needs:human`) · `main` accepts only what passed `stage:verify` · every gate names an anchor · every cycle has a cap |
+| **1 · Enforced shape** | mechanism depends on it; a project that changes it breaks the system | branch format `<type>/<issue#>-<slug>` and its type set · the label **namespaces** (`kind:`/`triage:`/`stage:` + `needs:human`) · `main` accepts only what cleared `stage:docs` (after a passed `stage:verify`) · every gate names an anchor · every cycle has a cap |
 | **2 · Configured values** | shape is fixed, the strings are per project — the system must be *told* them | actual label strings · base branch (`main`/`master`) · tracker · test command · demo command · design system · monitoring locations |
 | **3 · The project's own** | nothing mechanical reads it; the installer proposes a default the project may decline | **commit convention** (default: Conventional Commits) · code standards (the `review-loop` criteria docs) · ADR format · docs layout · language/framework conventions |
 
@@ -859,7 +972,8 @@ the [reuse philosophy](#the-development-system), naming an existing skill is not
 **Type key:** 🟦 skill · 🟧 runner · ⬛ script · 📄 doc/template.
 
 **Organization — three groups, and the group decides who gets the skill.** _(Resolved at build time;
-see [BUILD_PLAN §0.1a](BUILD_PLAN.md).)_ Skills live at `skills/<group>/<name>/`:
+see [BUILD_PLAN §0.1a](BUILD_PLAN.md).)_ Skills live at `<group>/skills/<name>/` — a group owns its
+own `skills/` and `runners/` trees:
 
 | Group | Contains | Test |
 |---|---|---|
@@ -942,7 +1056,7 @@ install tree stays **flat**, so a skill's own path never changes and regrouping 
 | Bug front-half | `diagnose` | **reuse** | 🟦 | peer of the grill: for a hard bug the diagnosis *is* the Design Doc |
 | `needs:human` modifier | `ready-for-human` | **replace** | 📄 | who-executes, not where-it-is; orchestrator skips these when dispatching |
 | Log-fetching skill | — | **new** (later) | 🟦 | resolves nearest `MONITORING.md`; optional/deferred |
-| GitHub Projects view (board + roadmap) | (none) | **new** (in `setup-agent-skills`) | 📄 | orchestrator sets Status alongside labels; a view, not a source of truth |
+| GitHub Projects view (board + roadmap) | (none) | **new** (in `setup-agent-skills`) | 📄 | provisions the `Status` field + lifecycle values; each phase's owner writes its transition (`log`/producers/orchestrator/built-in); a view, not a source of truth |
 | `status`/standup progress reporter | — | **new** | 🟦 | agent narrates progress from tracker/Project (`gh` + GraphQL) |
 | Trello tracking | `trello` + `verify-prd` sync | **remove** | 🟦 | superseded by GitHub Projects |
 

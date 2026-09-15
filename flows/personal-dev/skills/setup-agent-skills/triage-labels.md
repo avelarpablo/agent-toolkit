@@ -1,15 +1,22 @@
 # Triage Labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+The **triage axis** governs getting an issue *ready to build* — it is one of several label namespaces
+in the pipeline. This file maps the triage roles to the actual strings in this repo's tracker; the
+full label state machine (kind / triage / stage / needs:human / blocked) is in
+[dev-flow-provisioning.md](./dev-flow-provisioning.md).
 
-| Default label | Label in our tracker | Meaning                                  |
-| ------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| Default label | Label in our tracker | Meaning |
+| --- | --- | --- |
+| `needs-triage` | `needs-triage` | Maintainer needs to evaluate this issue |
+| `needs-info`   | `needs-info`   | Waiting on reporter for more information |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+The single exit out of triage into the build machine is **`needs-triage → stage:ready`**. Two roles
+from the old vocabulary are gone:
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+- **`ready-for-agent` is deleted** — it *was* `stage:ready` under another name.
+- **`ready-for-human` became the modifier `needs:human`** — it answers *who executes*, not *where it
+  is*, so it is no longer a triage state.
+- **`wontfix`** is not a label — close the issue with a reason.
+
+Edit the right-hand column to match whatever vocabulary you actually use. When a skill mentions a
+triage role, use the corresponding string here.

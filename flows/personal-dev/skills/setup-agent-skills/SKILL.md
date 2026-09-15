@@ -1,6 +1,6 @@
 ---
 name: setup-agent-skills
-description: Sets up an `## Agent skills` block in AGENTS.md/CLAUDE.md and `docs/agents/` so the engineering skills know this repo's issue tracker (GitHub or local markdown), triage label vocabulary, and domain doc layout. Run before first use of `to-issues`, `to-prd`, `triage`, `diagnose`, `tdd`, `improve-codebase-architecture`, or `zoom-out` — or if those skills appear to be missing context about the issue tracker, triage labels, or domain docs.
+description: Sets up an `## Agent skills` block in AGENTS.md/CLAUDE.md and `docs/agents/` so the engineering skills know this repo's issue tracker, label vocabulary, and domain doc layout — AND provisions the development-system pipeline: the label state machine (kind/triage/stage/needs:human), the `<type>/<issue#>-<slug>` branch convention, the GitHub Project (with its Status and Environment fields and four views), and the three standards tiers. Run before first use of `to-prd`, `to-vertical-issues`, `triage`, `log`, the orchestrator, `diagnose`, or `tdd` — or if those skills appear to be missing context about the tracker, labels, branch convention, or Project.
 disable-model-invocation: true
 ---
 
@@ -48,15 +48,14 @@ Default posture: these skills were designed for GitHub. If a `git remote` points
 
 > Explainer: When the `triage` skill processes an incoming issue, it moves it through a state machine — needs evaluation, waiting on reporter, ready for an AFK agent to pick up, ready for a human, or won't fix. To do that, it needs to apply labels (or the equivalent in your issue tracker) that match strings *you've actually configured*. If your repo already uses different label names (e.g. `bug:triage` instead of `needs-triage`), map them here so the skill applies the right ones instead of creating duplicates.
 
-The five canonical roles:
+The triage axis has two roles: `needs-triage` (maintainer must evaluate) and `needs-info` (waiting on
+reporter); its single exit is `needs-triage → stage:ready`. These sit inside the **full label state
+machine** (kind / triage / stage / needs:human / blocked / wayfinder:map) that Section D provisions —
+see [dev-flow-provisioning.md](./dev-flow-provisioning.md). On an existing repo, migrate the old
+vocabulary: `ready-for-agent` → delete (it *was* `stage:ready`), `ready-for-human` → the `needs:human`
+modifier, relabeling **open issues only**.
 
-- `needs-triage` — maintainer needs to evaluate
-- `needs-info` — waiting on reporter
-- `ready-for-agent` — fully specified, AFK-ready (an agent can pick it up with no human context)
-- `ready-for-human` — needs human implementation
-- `wontfix` — will not be actioned
-
-Default: each role's string equals its name. Ask the user if they want to override any. If their issue tracker has no existing labels, the defaults are fine.
+Default: each role's string equals its name. Ask the user if they want to override any.
 
 **Section C — Domain docs.**
 
@@ -66,6 +65,20 @@ Confirm the layout:
 
 - **Single-context** — one `CONTEXT.md` + `docs/adr/` at the repo root. Most repos are this.
 - **Multi-context** — `CONTEXT-MAP.md` at the root pointing to per-context `CONTEXT.md` files (typically a monorepo).
+
+**Section D — the pipeline (labels, branch, Project, standards).**
+
+> Explainer: the development-system pipeline runs on a fixed set of labels, a branch naming
+> convention, and a GitHub Project. This section provisions them. The *shapes* are enforced (they're
+> what the orchestrator and scripts parse); the *strings* are yours.
+
+Walk the three standards tiers ([dev-flow-provisioning.md](./dev-flow-provisioning.md) → Standards):
+**enforce** the tier-1 shapes (branch format + type set, label namespaces, the `main`-accepts-only-
+`stage:docs`-cleared rule); **ask** for the tier-2 strings (label strings, base branch, test command,
+demo command, design system, monitoring locations, `Environment` values); **propose** the tier-3
+defaults the project may decline (commit convention = Conventional Commits, code standards, ADR
+format, docs layout). Confirm whether the Project should be **org-level spanning several repos** (the
+umbrella/PRD + code-repo/slices pattern) or single-repo.
 
 ### 3. Confirm and edit
 
@@ -115,6 +128,26 @@ Then write the three docs files using the seed templates in this skill folder as
 - [domain.md](./domain.md) — domain doc consumer rules + layout
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
+
+Also write `docs/agents/dev-flow.md` recording the pipeline decisions (chosen label strings, base
+branch, test/demo commands, Project number, Environment values, tier-3 choices), seeded from
+[dev-flow-provisioning.md](./dev-flow-provisioning.md).
+
+### 4b. Provision the pipeline
+
+Following [dev-flow-provisioning.md](./dev-flow-provisioning.md), actually create the machinery
+(confirm each group before running):
+
+- **Labels** — create the kind/triage/stage/needs:human/blocked/wayfinder:map set; migrate the old
+  vocabulary on existing repos (open issues only).
+- **Branch** — document the convention in `docs/agents/dev-flow.md`, protect `main`, and add the
+  promote-PR template under `.github/PULL_REQUEST_TEMPLATE/`.
+- **Project** — create/link the (org-level, if multi-repo) Project; provision the `Status` field
+  (Ideas/Shaping/In development/Done) and `Environment` field (default Staging/Production) and the
+  four views; enable auto-archive. Mirror `kind:` onto native issue types **only if** the owner is an
+  org.
+
+Everything here is `gh`/`gh api graphql`-scriptable; show the user the commands before running.
 
 ### 5. Done
 

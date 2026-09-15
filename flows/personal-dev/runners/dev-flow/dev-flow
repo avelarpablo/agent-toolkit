@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# dev-flow — deterministic pipeline mechanics the orchestrator calls.
+# Subcommands: create · teardown · seed · label · cleanup.  No judgment lives here.
+set -euo pipefail
+
+BASE_DEFAULT="${DEV_FLOW_BASE:-main}"
+WORKTREE_ROOT="${DEV_FLOW_WORKTREE_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)/.worktrees}"
+BUILDS_ROOT="${DEV_FLOW_BUILDS_ROOT:-$HOME/.ralph/builds}"
+PROTECTED="${DEV_FLOW_PROTECTED:-main master develop staging production}"
+DRY_RUN=0
+
+die()  { printf 'dev-flow: %s\n' "$*" >&2; exit 1; }
+# Command output goes to stderr so a subcommand's stdout carries only its return value
+# (e.g. create/seed print just the worktree path — the orchestrator captures that).
+run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*" >&2; else eval "$@" >&2; fi; }
+slugdir() { printf '%s' "$1" | tr '/' '-'; }   # branch -> worktree dir name
+
+is_protected() {
+  local b="$1" p
+  for p in $PROTECTED; do [ "$b" = "$p" ] && return 0; done
+  return 1
+}
+
+usage() {
+  cat >&2 <<'EOF'
+dev-flow <command> [args]   (--dry-run supported on every command)
+
+  create <type> <issue#> <slug> [--base <branch>]
+        Create a worktree on <type>/<issue#>-<slug> off <branch> (default: main).
+        Idempotent; prints the worktree path.
+  teardown <branch>
+        Remove the worktree for <branch> (the branch itself is left to cleanup).
+  seed <design-branch> <target-branch> [--base <branch>]
+        Make <design-branch>'s tree the first commit of <target-branch>, then
+        delete <design-branch>. Used by the design step.
+  label <issue#> <stage>
+        Flip the issue's stage: label — remove any existing stage:* and add stage:<stage>.
+  cleanup [--base <branch>]
+        Free ~/.ralph/builds/<branch>/ and delete the local branch for every branch
+        already MERGED into <base> (never the close). Idempotent.
+EOF
+  exit 2
+}
+
+# ---- create -----------------------------------------------------------------
+cmd_create() {
+  local type="${1:-}" issue="${2:-}" slug="${3:-}" base="$BASE_DEFAULT"; shift 3 || usage
+  while [ $# -gt 0 ]; do case "$1" in --base) base="$2"; shift 2;; *) usage;; esac; done
+  [ -n "$type" ] && [ -n "$issue" ] && [ -n "$slug" ] || usage
+  local branch="$type/$issue-$slug"
+  is_protected "$branch" && die "refusing to branch as a protected branch: $branch"
+  local dir="$WORKTREE_ROOT/$(slugdir "$branch")"
+  if git worktree list --porcelain | grep -qx "worktree $dir"; then
+    printf '%s\n' "$dir"; return 0                      # idempotent: already there
+  fi
+  run "git fetch --quiet origin '$base' 2>/dev/null || true"
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    run "git worktree add '$dir' '$branch'"             # branch exists, attach
+  else
+    run "git worktree add -b '$branch' '$dir' '$base'"  # new branch off base
+  fi
+  printf '%s\n' "$dir"
+}
+
+# ---- teardown ---------------------------------------------------------------
+cmd_teardown() {
+  local branch="${1:-}"; [ -n "$branch" ] || usage
+  local dir="$WORKTREE_ROOT/$(slugdir "$branch")"
+  git worktree list --porcelain | grep -qx "worktree $dir" || { printf 'no worktree for %s\n' "$branch"; return 0; }
+  run "git worktree remove --force '$dir'"
+}
+
+# ---- seed -------------------------------------------------------------------
+# design/<issue>-<slug> content becomes the first commit of the target branch.
+cmd_seed() {
+  local design="${1:-}" target="${2:-}" base="$BASE_DEFAULT"; shift 2 || usage
+  while [ $# -gt 0 ]; do case "$1" in --base) base="$2"; shift 2;; *) usage;; esac; done
+  [ -n "$design" ] && [ -n "$target" ] || usage
+  git show-ref --verify --quiet "refs/heads/$design" || die "no such design branch: $design"
+  is_protected "$target" && die "refusing to seed a protected branch: $target"
+  local dir="$WORKTREE_ROOT/$(slugdir "$target")"
+  run "git worktree add -b '$target' '$dir' '$base'"
+  # bring the design tree in as one commit on the fresh target branch
+  run "git -C '$dir' checkout '$design' -- ."
+  run "git -C '$dir' add -A"
+  run "git -C '$dir' commit -m 'Seed from $design (approved prototype)' --no-verify"
+  run "git branch -D '$design'"
+  local ddir="$WORKTREE_ROOT/$(slugdir "$design")"
+  git worktree list --porcelain | grep -qx "worktree $ddir" && run "git worktree remove --force '$ddir'"
+  printf '%s\n' "$dir"
+}
+
+# ---- label ------------------------------------------------------------------
+cmd_label() {
+  local issue="${1:-}" stage="${2:-}"; [ -n "$issue" ] && [ -n "$stage" ] || usage
+  command -v gh >/dev/null || die "gh not found"
+  local target="stage:${stage#stage:}"
+  # remove any existing stage:* label, then add the target
+  local existing
+  existing="$(gh issue view "$issue" --json labels -q '.labels[].name' 2>/dev/null | grep '^stage:' || true)"
+  while IFS= read -r l; do
+    [ -n "$l" ] && [ "$l" != "$target" ] && run "gh issue edit '$issue' --remove-label '$l'"
+  done <<< "$existing"
+  run "gh issue edit '$issue' --add-label '$target'"
+}
+
+# ---- cleanup ----------------------------------------------------------------
+cmd_cleanup() {
+  local base="$BASE_DEFAULT"
+  while [ $# -gt 0 ]; do case "$1" in --base) base="$2"; shift 2;; *) usage;; esac; done
+  [ -d "$BUILDS_ROOT" ] || { printf 'nothing to clean (%s absent)\n' "$BUILDS_ROOT"; return 0; }
+  local merged
+  merged="$(git branch --merged "$base" --format '%(refname:short)' 2>/dev/null || true)"
+  local d branch
+  for d in "$BUILDS_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    branch="$(basename "$d")"
+    is_protected "$branch" && continue
+    # clean when the branch is merged into base, OR the branch no longer exists
+    if printf '%s\n' "$merged" | grep -qx "$branch" || ! git show-ref --verify --quiet "refs/heads/$branch"; then
+      run "rm -rf '$d'"
+      git show-ref --verify --quiet "refs/heads/$branch" && run "git branch -D '$branch'"
+      cmd_teardown "$branch" >/dev/null 2>&1 || true
+      printf 'cleaned %s\n' "$branch"
+    fi
+  done
+}
+
+# ---- dispatch ---------------------------------------------------------------
+[ $# -gt 0 ] || usage
+CMD="$1"; shift
+# pull a --dry-run out of anywhere in the args
+args=(); for a in "$@"; do [ "$a" = "--dry-run" ] && DRY_RUN=1 || args+=("$a"); done
+set -- ${args[@]+"${args[@]}"}
+case "$CMD" in
+  create)   cmd_create   "$@";;
+  teardown) cmd_teardown "$@";;
+  seed)     cmd_seed     "$@";;
+  label)    cmd_label    "$@";;
+  cleanup)  cmd_cleanup  "$@";;
+  -h|--help|help) usage;;
+  *) die "unknown command: $CMD (try --help)";;
+esac

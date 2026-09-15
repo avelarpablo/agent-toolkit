@@ -10,3 +10,4 @@ runners/ralph/reviews/
 runners/ralph/.run.lock
 .fic/
 .reviews/
+.worktrees/

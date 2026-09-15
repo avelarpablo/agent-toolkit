@@ -1,0 +1,4 @@
+{
+  "entrypoint": "dev-flow",
+  "description": "Deterministic pipeline mechanics the orchestrator calls — worktree create/teardown/seed, stage-label flips, and merge-keyed cleanup. No judgment; the orchestrator owns policy."
+}
